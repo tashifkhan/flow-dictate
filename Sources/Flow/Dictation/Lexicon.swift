@@ -37,9 +37,34 @@ final class Lexicon {
 
     func addWord(_ word: String) {
         let trimmed = word.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, !words.contains(where: { $0.caseInsensitiveCompare(trimmed) == .orderedSame }) else { return }
+        guard !trimmed.isEmpty, !contains(trimmed) else { return }
         words.append(trimmed)
         persistWords()
+    }
+
+    /// Bulk add, for pasting a glossary in or importing a file. Accepts newline, comma,
+    /// semicolon, or tab separated input, which covers a pasted column, a CSV, and a
+    /// plain list without asking anyone to care about the difference.
+    ///
+    /// Returns how many were actually new, so the UI can say so.
+    @discardableResult
+    func addWords(_ text: String) -> Int {
+        let before = words.count
+        let tokens = text.split(whereSeparator: { $0 == "\n" || $0 == "\r" || $0 == "," || $0 == ";" || $0 == "\t" })
+        for token in tokens {
+            let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, !contains(trimmed) else { continue }
+            words.append(trimmed)
+        }
+        if words.count != before { persistWords() }
+        return words.count - before
+    }
+
+    /// The word list as a file: one per line, stable order.
+    var exportedWords: String { words.joined(separator: "\n") }
+
+    func contains(_ word: String) -> Bool {
+        words.contains { $0.caseInsensitiveCompare(word) == .orderedSame }
     }
 
     func removeWord(_ word: String) {
