@@ -160,34 +160,50 @@ actor SpeechPipeline {
     /// contextual strings, which is the cheapest way to make it spell your name right.
     func start(
         vocabulary: [String],
+        inputDeviceUID: String,
         onLevel: @escaping @Sendable (Float) -> Void,
+        onRecording: @escaping @Sendable () -> Void,
         onUpdate: @escaping @Sendable (TranscriptionUpdate) -> Void
     ) async throws {
-        let locale = try await prepare()
         finalizedText = ""
         volatileText = ""
 
-        let module = makeModule(locale: locale)
-
-        let context = AnalysisContext()
-        if !vocabulary.isEmpty {
-            context.contextualStrings = [.general: vocabulary]
-        }
-
-        guard let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [module]) else {
-            throw PipelineError.noAudioFormat
-        }
-
+        // 1. Microphone first, before anything that can block. Everything below this
+        //    line runs while audio is already being captured and buffered.
         let capture = AudioCapture(onLevel: onLevel)
         self.capture = capture
-        let inputs = try capture.start(analyzerFormat: format)
+        try capture.startCapturing(preferredInputUID: inputDeviceUID)
+        onRecording()
 
-        let analyzer = SpeechAnalyzer(modules: [module])
-        self.analyzer = analyzer
-        try await analyzer.setContext(context)
-        try await analyzer.start(inputSequence: inputs)
+        do {
+            // 2. Now the slow part: locale resolution, and asset install the first time.
+            let locale = try await prepare()
+            let module = makeModule(locale: locale)
 
-        resultsTask = makeResultsTask(for: module, onUpdate: onUpdate)
+            let context = AnalysisContext()
+            if !vocabulary.isEmpty {
+                context.contextualStrings = [.general: vocabulary]
+            }
+
+            guard let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [module]) else {
+                throw PipelineError.noAudioFormat
+            }
+
+            // 3. Attach. The backlog replays first, so nothing said during step 2 is lost.
+            let inputs = try capture.attach(analyzerFormat: format)
+
+            let analyzer = SpeechAnalyzer(modules: [module])
+            self.analyzer = analyzer
+            try await analyzer.setContext(context)
+            try await analyzer.start(inputSequence: inputs)
+
+            resultsTask = makeResultsTask(for: module, onUpdate: onUpdate)
+        } catch {
+            // The mic is already open at this point; do not leave it that way.
+            capture.stop()
+            self.capture = nil
+            throw error
+        }
     }
 
     /// Bridges the module's typed result stream into `TranscriptionUpdate`.
@@ -241,6 +257,17 @@ actor SpeechPipeline {
 
     /// Stops the mic, drains the analyzer, and returns the finished transcript.
     func finish() async throws -> String {
+        // A short dictation can end before the model has finished loading. Stopping the
+        // capture now would throw away the backlog it is holding, so give `start` a
+        // moment to reach `attach` — actor reentrancy is what lets it make progress
+        // while this waits. The mic stays open a beat longer, which costs a little tail
+        // audio and saves the whole utterance.
+        if analyzer == nil, capture != nil {
+            for _ in 0..<40 where analyzer == nil {
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+        }
+
         capture?.stop()
         capture = nil
 

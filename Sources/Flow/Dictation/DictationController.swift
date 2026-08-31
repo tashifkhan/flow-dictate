@@ -198,6 +198,8 @@ final class DictationController {
         phase = .preparing(nil)
 
         let vocabulary = lexicon.words
+        // Read here, on the main actor; the pipeline runs off it.
+        let inputDeviceUID = Settings.shared.inputDeviceUID
         run = Task { [pipeline, levels] in
             guard await AudioCapture.requestMicAccess() else {
                 self.fail(AudioCapture.CaptureError.micDenied.localizedDescription)
@@ -206,8 +208,15 @@ final class DictationController {
             do {
                 try await pipeline.start(
                     vocabulary: vocabulary,
+                    inputDeviceUID: inputDeviceUID,
                     onLevel: { level in
                         Task { @MainActor in levels.push(level) }
+                    },
+                    onRecording: {
+                        // The mic is live now, not when the model finishes loading.
+                        Task { @MainActor in
+                            if case .preparing = self.phase { self.phase = .recording }
+                        }
                     },
                     onUpdate: { update in
                         Task { @MainActor in self.absorb(update) }
