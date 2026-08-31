@@ -7,14 +7,14 @@ network at dictation time.
 
 ## First run
 
-Run this **once**, before anything else:
+Run this once, before anything else:
 
 ```sh
 ./make-cert.sh     # creates a stable local signing identity
 ./build.sh
 ```
 
-Skipping it is the single most confusing thing you can do to yourself — see
+Skipping it is the single most confusing thing you can do to yourself. See
 [Permissions that will not stick](#permissions-that-will-not-stick).
 
 ## Build and run
@@ -31,7 +31,7 @@ open build/Flow.app
 `Flow Dev` identity created by `make-cert.sh` (falling back to ad-hoc, with a warning,
 if you have not run it).
 
-Flow is an accessory app: it lives in the menu bar with no dock icon.
+Flow is an accessory app. It lives in the menu bar with no dock icon.
 
 ### Verification
 
@@ -39,25 +39,24 @@ Flow is an accessory app: it lives in the menu bar with no dock icon.
 ./build/Flow.app/Contents/MacOS/Flow --self-check
 ```
 
-74 checks covering the SQLite store, retention, search, record derivation, statistics,
+94 checks covering the SQLite store, retention, search, record derivation, statistics,
 daily aggregates, hotkey encoding, lexicon matching, custom-model handling, and
-availability copy. Exits
-non-zero on failure.
+availability copy. Exits non-zero on failure.
 
 ## Where the app is
 
-Flow is a menu bar accessory, so there is no dock icon. **Until both permissions are
-granted it opens its window at launch onto a Setup screen** that shows exactly what is
-missing, what the transcriber and speech model are doing, and a Try a dictation button.
-Once setup is done the window stops appearing on its own; open it from the menu bar
-waveform icon › Flow Window, or `flowclone://history`.
+Flow is a menu bar accessory, so there is no dock icon. Until both permissions are
+granted it opens its window at launch onto a Setup screen that shows exactly what is
+missing, what the transcriber and speech model are doing, and a button to try a
+dictation. Once setup is done the window stops appearing on its own; open it from the
+menu bar waveform icon › Flow Window, or `flowclone://history`.
 
 ## Permissions that will not stick
 
-If you grant Accessibility, quit, reopen, and Flow still says it does not have it — and
-the toggle is clearly on in System Settings — this is why.
+If you grant Accessibility, quit, reopen, and Flow still says it does not have it, with
+the toggle clearly on in System Settings, this is why.
 
-An **ad-hoc** signature (`codesign -s -`) has a designated requirement of
+An ad-hoc signature (`codesign -s -`) has a designated requirement of
 `cdhash H"…"`, a hash of the binary's contents. Every rebuild changes it, so macOS
 treats each build as a different app. The TCC grant is still pinned to the old hash, so
 `AXIsProcessTrusted()` returns false while the switch sits there looking enabled.
@@ -88,16 +87,16 @@ Flow asks for two things, once each. Both are required before it can do anything
 | **Accessibility** | Watch the push-to-talk key, and type at your cursor | System Settings › Privacy & Security › Accessibility |
 | **Microphone** | Capture audio while you hold the key | Prompted on first dictation |
 
-Accessibility must be granted manually — macOS gives no way to script it. Flow triggers
+Accessibility must be granted manually. macOS gives no way to script it. Flow triggers
 the prompt on first launch and nags in the menu bar until it is granted. **After
-granting it, quit and relaunch Flow**; event taps are only installed at startup.
+granting it, quit and relaunch Flow.** Event taps are only installed at startup.
 
 ## Using it
 
 - **Hold `fn`** anywhere in macOS, talk, let go. Settings › General › Hold to talk
-  rebinds it: pick a preset, or click the field and press any modifier (fn, right ⌥,
-  right ⌃…) or any key with at least one modifier (⌃⌥Space). A bare letter is refused —
-  it is a global watcher and would fire while you type.
+  rebinds it. Pick a preset, or click the field and press any modifier (fn, right ⌥,
+  right ⌃…) or any key with at least one modifier (⌃⌥Space). A bare letter is refused.
+  It is a global watcher and would fire while you type.
 - **Escape** while recording cancels without inserting
 - **⇧⌘V** re-inserts the selected history entry at the cursor
 - **⇧⌘N** new note, **⇧⌘D** start a dictation, both in-app
@@ -143,16 +142,17 @@ selectable window; **Activity** is a contribution graph of words dictated per da
 the trailing year, with a per-day hover readout.
 
 Statistics are computed from a separate `daily_stat` aggregate table, not from the
-transcripts. That matters: retention deletes what you said, and it should not also
-delete the fact that you said it. The aggregate holds no content — a date, a word count,
-a dictation count, and a duration — so a year of activity survives a 30-day retention
-setting. Upgrading backfills the table from whatever transcripts you still have.
+transcripts. That matters. Retention deletes what you said, and it should not also
+delete the fact that you said it. The aggregate holds no content, just a date, a word
+count, a dictation count, and a duration, so a year of activity survives a 30-day
+retention setting. Upgrading backfills the table from whatever transcripts you still
+have.
 
 Time Saved compares speaking against typing at 40 wpm. It is an estimate and the UI
 says so.
 
 The heatmap is a sequential one-hue ramp, light→dark, with absence encoded as neutral
-gray rather than the palest blue — "nothing happened" is not a small magnitude. Light
+gray rather than the palest blue. "Nothing happened" is not a small magnitude. Light
 and dark steps were each chosen and validated against their own surface rather than one
 being flipped for the other.
 
@@ -198,18 +198,18 @@ machine, so the notarized path is written and wired but has not been executed he
 
 ## Custom speech model
 
-The plan's heavier custom-vocabulary fix, in Settings › Vocabulary. It trains an
+The heavier custom-vocabulary option, in Settings › Vocabulary. It trains an
 `SFCustomLanguageModelData` model from your word list and past corrections.
 
-It carries a real cost, and the settings window says so: a custom model can only be
+It carries a real cost, and the settings window says so. A custom model can only be
 attached to `DictationTranscriber`, not to `SpeechTranscriber`, so turning it on trades
-the better transcriber for the fallback. Try the word list alone first — it is fed to
+the better transcriber for the fallback. Try the word list alone first. It is fed to
 the recogniser as contextual strings and to the cleanup prompt, and that is most of the
 win. Hence opt-in, with a discard button.
 
-## Where this departs from the plan
+## Where the toolchain changed the design
 
-The plan was written against a machine with Xcode and macOS 27. This one has neither.
+This machine has no Xcode and runs macOS 26.5, not the macOS 27 the design assumed.
 Every deviation below is forced by the toolchain, not a change of design.
 
 **SwiftData → SQLite.** `@Model` is a macro whose plugin ships with Xcode, not with the
@@ -221,7 +221,7 @@ later means one new file and one changed line in `Library.make()`.
 builds its `Decision` schema through Foundation Models' dynamic schema API instead,
 which gives identical constrained decoding without the macro.
 
-**`CaptureInputSequenceProvider` → a hand-rolled tap.** The plan's §04 sketch uses this
+**`CaptureInputSequenceProvider` → a hand-rolled tap.** The original sketch uses this
 type; it does not exist in the macOS 26.5 SDK. `AudioCapture` does the same job
 directly: an `AVAudioEngine` input tap, an `AVAudioConverter` into the analyzer's
 preferred format, and an `AsyncStream<AnalyzerInput>`. The same tap computes RMS for
@@ -241,7 +241,7 @@ with the Command Line Tools, so the checks live in the app behind a flag.
 **The processing hang.** Holding the key worked, but releasing it left the panel stuck
 on "Cleaning up…" forever. Root cause: when the analyzer receives *zero* input buffers,
 `finalizeAndFinishThroughEndOfInput()` returns normally but `SpeechTranscriber.results`
-never terminates — and it does not honour cancellation, so awaiting it wedged the app.
+never terminates, and it does not honour cancellation, so awaiting it wedged the app.
 Racing it against a timeout in a task group does not help either, because a task group
 cannot return until every child finishes. The fix is to never await it: finalizing
 already guarantees delivery, so `finish()` cancels the results task and yields once to
@@ -259,7 +259,7 @@ indefinitely. The panel now follows the dictation: when the phase returns to idl
 hides.
 
 **Cleanup status was frozen at whatever it was on launch.** `SystemLanguageModel`
-availability is not observable and flips without warning — the model finishes preparing,
+availability is not observable and flips without warning. The model finishes preparing,
 or you switch Apple Intelligence on. Flow now polls while it is unavailable and starts
 using cleanup on its own, no relaunch. The "model still downloading" wording was also
 overconfident: `.modelNotReady` is macOS reporting that Apple Intelligence is not ready
@@ -277,17 +277,17 @@ nothing" from "no sound reached the microphone" and says which.
 - **Cleanup is off on this Mac.** `SystemLanguageModel.availability` reports
   `appleIntelligenceNotEnabled`, so Flow inserts raw transcripts and says so in the
   menu bar and the panel. Turn on Apple Intelligence in System Settings and cleanup
-  starts working with no rebuild — the fallback is exactly what plan §12 calls for.
+  starts working with no rebuild.
 - **macOS 27 polish is absent.** The SDK here is 26.5, so the Golden Gate refinements
   (tint slider, tighter corners) have nothing to compile against. The layout is plain
   `NavigationSplitView` and will pick them up.
-- **Clipboard restore window.** The paste path holds your clipboard for ~250 ms. Copy
-  something in exactly that window and you lose it. Acceptable, per plan §12.
+- **Clipboard restore window.** The paste path holds your clipboard for ~600 ms. Copy
+  something in exactly that window and you lose it. Acceptable.
 - **Notarization is unexecuted.** `notarytool` and `stapler` are present, but this Mac
   has no signing identities, so `package.sh`'s notarize path has never run. The DMG
   build path has: it mounts, and the app inside it validates.
 - **The dictation loop is unverified end to end.** Transcription, insertion, and the
   panel all need Microphone and Accessibility grants, which only you can give. What has
   been verified: the app builds, launches, stays resident, creates its database, and
-  passes all 34 self-checks; `SpeechTranscriber` reports available with `en_IN`
+  passes all 94 self-checks; `SpeechTranscriber` reports available with `en_IN`
   resolved and nine installed locales.
