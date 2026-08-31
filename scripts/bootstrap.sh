@@ -3,7 +3,7 @@
 # Install Flow from a temporary clone for the README's curl command.
 set -euo pipefail
 
-REPOSITORY_URL="${FLOW_REPOSITORY_URL:-https://github.com/tashifkhan/dictate.git}"
+REPOSITORY_URL="${FLOW_REPOSITORY_URL:-https://github.com/tashifkhan/flow-dictate.git}"
 BRANCH="${FLOW_BRANCH:-main}"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then

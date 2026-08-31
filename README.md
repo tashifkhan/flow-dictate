@@ -11,7 +11,7 @@ Flow requires macOS 26 or newer and a Swift 6 toolchain. This command downloads 
 repository, builds the app, installs it in `/Applications`, and opens it:
 
 ```sh
-bash <(curl -fsSL https://raw.githubusercontent.com/tashifkhan/dictate/main/scripts/bootstrap.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/tashifkhan/flow-dictate/main/scripts/bootstrap.sh)
 ```
 
 The command runs `scripts/bootstrap.sh` from the `main` branch. Read that file first if
