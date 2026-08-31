@@ -45,3 +45,41 @@ codesign --force "${SIGN_ARGS[@]}" \
 codesign --verify --deep --strict "$APP"
 
 echo "built $APP"
+
+# Install to /Applications, replacing whatever is there.
+#
+# Two copies of Flow with the same bundle identifier is not a tidiness problem, it is a
+# permissions problem: TCC keys a grant to identifier + certificate, so an older copy
+# signed by a certificate you no longer have will hold the Accessibility grant while the
+# copy you just built reads it as missing. The toggle sits there enabled and nothing
+# works. Installing every build keeps exactly one copy on disk.
+#
+# Opt-in: FLOW_INSTALL=1 ./build.sh. Off by default so a build leaves exactly one copy
+# on disk, the one in build/.
+if [ "${FLOW_INSTALL:-0}" = "1" ]; then
+	DEST="/Applications/Flow.app"
+
+	# A running copy holds its bundle open, and relaunching is what picks up the build.
+	WAS_RUNNING=""
+	if pgrep -f "$DEST/Contents/MacOS/Flow" >/dev/null 2>&1; then
+		WAS_RUNNING=1
+		osascript -e 'tell application "Flow" to quit' >/dev/null 2>&1 || true
+		# Give it a moment to go down cleanly before insisting.
+		for _ in 1 2 3 4 5; do
+			pgrep -f "$DEST/Contents/MacOS/Flow" >/dev/null 2>&1 || break
+			sleep 0.4
+		done
+		pkill -f "$DEST/Contents/MacOS/Flow" >/dev/null 2>&1 || true
+	fi
+
+	rm -rf "$DEST"
+	# ditto, not cp: it preserves the bundle's signature intact.
+	ditto "$APP" "$DEST"
+	codesign --verify --deep --strict "$DEST"
+	echo "installed $DEST"
+
+	if [ -n "$WAS_RUNNING" ]; then
+		open "$DEST"
+		echo "relaunched Flow"
+	fi
+fi
