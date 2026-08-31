@@ -5,17 +5,86 @@ struct PanelView: View {
     @Bindable var controller: DictationController
     var onCancel: () -> Void
 
+    private var isCompact: Bool { Settings.shared.panelSize == .compact }
+
     var body: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: isCompact ? 9 : 14) {
             glyph
-            content
+            if isCompact { compactContent } else { content }
+            if isCompact, controller.phase.isBusy { stopButton }
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 14)
-        .frame(width: 380, alignment: .leading)
-        .glassPill()
+        .padding(.horizontal, isCompact ? 12 : 18)
+        .padding(.vertical, isCompact ? 9 : 14)
+        .frame(width: Settings.shared.panelSize.frame.width, alignment: .leading)
+        .glassPill(cornerRadius: isCompact ? 15 : 22)
         .animation(.smooth(duration: 0.22), value: controller.phase)
         .onExitCommand(perform: onCancel)
+    }
+
+    // MARK: - Stop
+
+    /// Escape already cancels from anywhere, but only if you know that. This is the
+    /// discoverable version, and the only way to stop a dictation with the mouse.
+    private var stopButton: some View {
+        Button(action: onCancel) {
+            Image(systemName: "xmark")
+                .font(.system(size: 8, weight: .heavy))
+                .foregroundStyle(.secondary)
+                .frame(width: 17, height: 17)
+                .contentShape(.circle)
+                .background(.quaternary, in: .circle)
+        }
+        .buttonStyle(.plain)
+        .help("Stop and discard (Escape)")
+    }
+
+    // MARK: - Compact body
+    //
+    // One line, no wrapping, no transcript: the compact panel is a status light, not a
+    // reading surface. Anything that needs words is in the history window afterwards.
+
+    @ViewBuilder
+    private var compactContent: some View {
+        switch controller.phase {
+        case .idle:
+            Text("Hold \(Settings.shared.hotkey.label)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+        case .preparing:
+            Text("Preparing model")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+        case .recording:
+            Waveform(levels: controller.levels.bars, isLive: true)
+                .frame(height: 16)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+        case .processing:
+            Waveform(levels: controller.levels.bars, isLive: false)
+                .frame(height: 16)
+                .redacted(reason: .placeholder)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+        case .inserted:
+            Text("Inserted")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+        case .failed(let message):
+            Text(message)
+                .font(.caption)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 
     // MARK: - Left glyph
@@ -36,7 +105,7 @@ struct PanelView: View {
             case .recording:
                 Circle()
                     .fill(.red)
-                    .frame(width: 10, height: 10)
+                    .frame(width: isCompact ? 8 : 10, height: isCompact ? 8 : 10)
                     .shadow(color: .red.opacity(0.6), radius: 4)
             case .processing:
                 ProgressView().progressViewStyle(.circular).controlSize(.small)
@@ -48,8 +117,8 @@ struct PanelView: View {
                     .foregroundStyle(.orange)
             }
         }
-        .font(.system(size: 15, weight: .medium))
-        .frame(width: 20, height: 20)
+        .font(.system(size: isCompact ? 12 : 15, weight: .medium))
+        .frame(width: isCompact ? 14 : 20, height: isCompact ? 14 : 20)
     }
 
     // MARK: - Body
@@ -123,15 +192,17 @@ struct PanelView: View {
 
 private extension View {
     /// The new Siri look on macOS 26. Do not hand-roll blur shaders, life is short.
-    func glassPill() -> some View {
-        modifier(GlassPill())
+    func glassPill(cornerRadius: CGFloat) -> some View {
+        modifier(GlassPill(cornerRadius: cornerRadius))
     }
 }
 
 private struct GlassPill: ViewModifier {
+    let cornerRadius: CGFloat
+
     func body(content: Content) -> some View {
         content
-            .glassEffect(.regular, in: .rect(cornerRadius: 22))
+            .glassEffect(.regular, in: .rect(cornerRadius: cornerRadius))
             .shadow(color: .black.opacity(0.22), radius: 18, y: 8)
     }
 }

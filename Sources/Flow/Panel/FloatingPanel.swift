@@ -40,7 +40,8 @@ final class PanelPresenter {
     private var panel: FloatingPanel?
     private let controller: DictationController
 
-    private static let size = CGSize(width: 380, height: 128)
+    /// Follows the setting, so switching size takes effect on the next show().
+    private static var size: CGSize { Settings.shared.panelSize.frame }
 
     init(controller: DictationController) {
         self.controller = controller
@@ -49,6 +50,11 @@ final class PanelPresenter {
     func show() {
         let panel = panel ?? make()
         self.panel = panel
+        // The hosting view self-sizes, but the window does not shrink on its own after
+        // the setting changes, so pin the height before positioning reads the frame.
+        if panel.frame.height != Self.size.height {
+            panel.setContentSize(Self.size)
+        }
         position(panel)
         // orderFrontRegardless, not makeKeyAndOrderFront: the whole point is not to
         // disturb whoever has focus.

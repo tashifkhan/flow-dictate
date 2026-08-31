@@ -10,6 +10,19 @@ enum PanelPlacement: String, CaseIterable, Identifiable, Sendable {
     var label: String { self == .bottomCenter ? "Bottom center" : "Near the cursor" }
 }
 
+/// How much panel you want on screen while you talk.
+enum PanelSize: String, CaseIterable, Identifiable, Sendable {
+    case compact, standard
+
+    var id: String { rawValue }
+    var label: String { self == .compact ? "Compact" : "Standard" }
+
+    /// Positioning runs before the hosting view has laid out, so it needs a size up front.
+    var frame: CGSize {
+        self == .compact ? CGSize(width: 236, height: 54) : CGSize(width: 380, height: 128)
+    }
+}
+
 /// What the main window shows on open.
 enum OpenTo: String, CaseIterable, Identifiable, Sendable {
     case recent, newNote
@@ -31,6 +44,10 @@ final class Settings {
         }
     }
     var placement: PanelPlacement { didSet { defaults.set(placement.rawValue, forKey: K.placement) } }
+    /// Empty means "follow the system default". Stored as a device UID, which survives
+    /// reboots and re-pairings; the numeric CoreAudio id does not.
+    var inputDeviceUID: String { didSet { defaults.set(inputDeviceUID, forKey: K.inputDevice) } }
+    var panelSize: PanelSize { didSet { defaults.set(panelSize.rawValue, forKey: K.panelSize) } }
     var retention: Retention { didSet { defaults.set(retention.rawValue, forKey: K.retention) } }
     var openTo: OpenTo { didSet { defaults.set(openTo.rawValue, forKey: K.openTo) } }
 
@@ -56,6 +73,8 @@ final class Settings {
         static let hotkey = "hotkeyV2"
         static let legacyKey = "pushToTalkKey"
         static let placement = "panelPlacement"
+        static let inputDevice = "inputDeviceUID"
+        static let panelSize = "panelSize"
         static let retention = "retention"
         static let openTo = "openTo"
         static let cleanup = "cleanupEnabled"
@@ -92,6 +111,8 @@ final class Settings {
             }
         }
         placement = PanelPlacement(rawValue: defaults.string(forKey: K.placement) ?? "") ?? .bottomCenter
+        inputDeviceUID = defaults.string(forKey: K.inputDevice) ?? ""
+        panelSize = PanelSize(rawValue: defaults.string(forKey: K.panelSize) ?? "") ?? .compact
         retention = Retention(rawValue: defaults.string(forKey: K.retention) ?? "") ?? .ninetyDays
         openTo = OpenTo(rawValue: defaults.string(forKey: K.openTo) ?? "") ?? .recent
         cleanupEnabled = defaults.bool(forKey: K.cleanup)

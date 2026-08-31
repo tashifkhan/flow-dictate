@@ -1,25 +1,87 @@
 import AppKit
+import UniformTypeIdentifiers
 import SwiftUI
 
+/// One pane of Settings. Named so the main window's sidebar can address them
+/// individually instead of duplicating the controls.
+enum SettingsPane: String, CaseIterable, Hashable, Identifiable {
+    case general, vocabulary, api, privacy
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .general: "General"
+        case .vocabulary: "Vocabulary"
+        case .api: "API"
+        case .privacy: "Privacy"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .general: "gearshape"
+        case .vocabulary: "character.book.closed"
+        case .api: "terminal"
+        case .privacy: "hand.raised"
+        }
+    }
+}
+
 /// Settings, mirrored from the Siri app's shape: behaviour, appearance, retention.
+///
+/// Renders the full tabbed window by default, or a single pane when `pane` is set, so
+/// the Settings window and the main window's sidebar share one implementation.
 struct SettingsView: View {
     @Bindable var env: AppEnvironment
+    var pane: SettingsPane?
     @State private var settings = Settings.shared
     @State private var launchAtLogin = LoginItem.isEnabled
     @State private var loginError: String?
     @State private var newWord = ""
+    @State private var newFrom = ""
+    @State private var newCorrection = ""
+    /// Transient feedback for a bulk add or an import: "added 34 words".
+    @State private var dictionaryNote: String?
 
     var body: some View {
-        TabView {
-            general.tabItem { Label("General", systemImage: "gearshape") }
-            api.tabItem { Label("API", systemImage: "terminal") }
-            vocabulary.tabItem { Label("Vocabulary", systemImage: "character.book.closed") }
-            privacy.tabItem { Label("Privacy", systemImage: "hand.raised") }
+        if let pane {
+            // Embedded: fill whatever the host gives us, no fixed frame.
+            content(for: pane)
+                .navigationTitle(pane.title)
+        } else {
+            TabView {
+                general.tabItem { Label("General", systemImage: "gearshape") }
+                api.tabItem { Label("API", systemImage: "terminal") }
+                vocabulary.tabItem { Label("Vocabulary", systemImage: "character.book.closed") }
+                privacy.tabItem { Label("Privacy", systemImage: "hand.raised") }
+            }
+            .frame(width: 480, height: 400)
         }
-        .frame(width: 480, height: 400)
+    }
+
+    @ViewBuilder
+    private func content(for pane: SettingsPane) -> some View {
+        switch pane {
+        case .general: general
+        case .vocabulary: vocabulary
+        case .api: api
+        case .privacy: privacy
+        }
     }
 
     // MARK: - General
+
+    /// Read once when the pane appears. Devices come and go, but re-enumerating on every
+    /// redraw makes the picker flicker while it is open.
+    @State private var inputDevices: [AudioDevices.Device] = []
+
+    private var defaultInputLabel: String {
+        if let d = AudioDevices.systemDefaultInput {
+            return "System default (\(d.name))"
+        }
+        return "System default"
+    }
 
     private var general: some View {
         Form {
@@ -30,6 +92,32 @@ struct SettingsView: View {
 
                 Picker("Panel appears", selection: $settings.placement) {
                     ForEach(PanelPlacement.allCases) { Text($0.label).tag($0) }
+                }
+
+                Picker("Panel size", selection: $settings.panelSize) {
+                    ForEach(PanelSize.allCases) { Text($0.label).tag($0) }
+                }
+
+                Picker("Microphone", selection: $settings.inputDeviceUID) {
+                    Text(defaultInputLabel).tag("")
+                    Divider()
+                    ForEach(inputDevices) { Text($0.label).tag($0.uid) }
+                }
+                .onAppear { inputDevices = AudioDevices.inputs() }
+
+                if let chosen = AudioDevices.device(uid: settings.inputDeviceUID) ?? AudioDevices.systemDefaultInput,
+                   chosen.isTelephonyQuality {
+                    Label(
+                        "\(chosen.name) is in its 8 kHz call profile. Bluetooth speakers often deliver no audio at all here — pick the built-in microphone if dictation comes back empty.",
+                        systemImage: "exclamationmark.triangle"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+
+                LabeledContent("Stop a dictation") {
+                    Text("Escape, or the \u{00D7} on the panel")
+                        .foregroundStyle(.secondary)
                 }
 
                 Toggle("Play a sound when text lands", isOn: $settings.playSounds)
@@ -155,10 +243,31 @@ struct SettingsView: View {
                 .foregroundStyle(.secondary)
 
             HStack {
-                TextField("Add a word", text: $newWord)
+                TextField("Add a word, or paste a list", text: $newWord)
                     .onSubmit(addWord)
                 Button("Add", action: addWord)
                     .disabled(newWord.trimmingCharacters(in: .whitespaces).isEmpty)
+                Button("Import\u{2026}", action: importWords)
+                Button("Export\u{2026}", action: exportWords)
+                    .disabled(env.lexicon.words.isEmpty)
+            }
+
+            if let note = dictionaryNote {
+                Text(note).font(.caption).foregroundStyle(.secondary)
+            }
+
+            // Your own replacement rules. Until now these only appeared by saying
+            // "replace X with Y" mid-dictation, which is a poor way to enter a glossary.
+            HStack {
+                TextField("Heard as", text: $newFrom)
+                Image(systemName: "arrow.right").font(.caption2).foregroundStyle(.secondary)
+                TextField("Write instead", text: $newCorrection)
+                    .onSubmit(addCorrection)
+                Button("Add", action: addCorrection)
+                    .disabled(
+                        newFrom.trimmingCharacters(in: .whitespaces).isEmpty
+                            || newCorrection.trimmingCharacters(in: .whitespaces).isEmpty
+                    )
             }
 
             trainingBox
@@ -182,12 +291,12 @@ struct SettingsView: View {
                     }
                 }
 
-                Section("Recent corrections") {
-                    if env.lexicon.recent.isEmpty {
-                        Text("Say \"replace X with Y\" and it lands here.")
+                Section("Replacements") {
+                    if env.lexicon.corrections.isEmpty {
+                        Text("Add one above, or say \"replace X with Y\" while dictating.")
                             .foregroundStyle(.secondary)
                     }
-                    ForEach(env.lexicon.recent) { correction in
+                    ForEach(env.lexicon.corrections.reversed()) { correction in
                         HStack {
                             Text(correction.from).foregroundStyle(.secondary)
                             Image(systemName: "arrow.right").font(.caption2).foregroundStyle(.secondary)
@@ -248,8 +357,54 @@ struct SettingsView: View {
     }
 
     private func addWord() {
-        env.lexicon.addWord(newWord)
+        // The field doubles as a paste target, so always go through the bulk path.
+        let added = env.lexicon.addWords(newWord)
+        note(added == 0 ? "Already in the dictionary." : "Added \(added) word\(added == 1 ? "" : "s").")
         newWord = ""
+    }
+
+    private func addCorrection() {
+        env.lexicon.record(from: newFrom, to: newCorrection)
+        newFrom = ""
+        newCorrection = ""
+    }
+
+    /// One word per line. Also accepts the comma- and tab-separated shapes people
+    /// actually have lying around, since the parser handles them anyway.
+    private func importWords() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.plainText, .commaSeparatedText]
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose a word list. One per line, or comma separated."
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let added = env.lexicon.addWords(try String(contentsOf: url, encoding: .utf8))
+            note("Imported \(added) new word\(added == 1 ? "" : "s") from \(url.lastPathComponent).")
+        } catch {
+            note("Could not read that file: \(error.localizedDescription)")
+        }
+    }
+
+    private func exportWords() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.plainText]
+        panel.nameFieldStringValue = "flow-dictionary.txt"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try env.lexicon.exportedWords.write(to: url, atomically: true, encoding: .utf8)
+            note("Exported \(env.lexicon.words.count) words.")
+        } catch {
+            note("Could not write that file: \(error.localizedDescription)")
+        }
+    }
+
+    /// Feedback that clears itself, so the pane does not accumulate stale notices.
+    private func note(_ message: String) {
+        dictionaryNote = message
+        Task {
+            try? await Task.sleep(for: .seconds(4))
+            dictionaryNote = nil
+        }
     }
 
     // MARK: - Privacy
