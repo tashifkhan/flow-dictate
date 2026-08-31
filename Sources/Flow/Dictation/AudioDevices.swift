@@ -91,10 +91,11 @@ enum AudioDevices {
 
     private static func stringProperty(_ id: AudioDeviceID, _ selector: AudioObjectPropertySelector) -> String? {
         var addr = address(selector)
-        var value: CFString = "" as CFString
-        var size = UInt32(MemoryLayout<CFString>.size)
+        var value: Unmanaged<CFString>?
+        var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
         guard AudioObjectGetPropertyData(id, &addr, 0, nil, &size, &value) == noErr else { return nil }
-        let string = value as String
+        guard let value else { return nil }
+        let string = value.takeUnretainedValue() as String
         return string.isEmpty ? nil : string
     }
 

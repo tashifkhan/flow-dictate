@@ -80,8 +80,9 @@ struct FrontApp: Sendable {
         let app = AXUIElementCreateApplication(pid)
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(app, kAXFocusedUIElementAttribute as CFString, &value) == .success,
-              let value else { return nil }
-        return (value as! AXUIElement)
+              let value,
+              CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
+        return unsafeDowncast(value, to: AXUIElement.self)
     }
 
     static func string(_ element: AXUIElement, _ attribute: String) -> String? {

@@ -2,6 +2,8 @@ import Foundation
 import Network
 import OSLog
 
+private let maximumHTTPRequestBytes = 1_048_576
+
 /// A small HTTP API over loopback, so scripts, Raycast, and anything else on this Mac
 /// can read Flow's data and drive a dictation.
 ///
@@ -94,6 +96,18 @@ final class FlowServer {
                 var accumulated = buffer
                 if let data { accumulated.append(data) }
 
+                guard accumulated.count <= maximumHTTPRequestBytes else {
+                    let response = self.json(
+                        ["error": "request too large"],
+                        status: 413,
+                        statusText: "Content Too Large"
+                    )
+                    connection.send(content: response, completion: .contentProcessed { _ in
+                        connection.cancel()
+                    })
+                    return
+                }
+
                 // Wait for the full head, then for the body Content-Length promises.
                 guard let request = HTTPRequest(accumulated) else {
                     if isComplete { connection.cancel() } else { self.receive(on: connection, buffer: accumulated) }
@@ -111,7 +125,7 @@ final class FlowServer {
     private func route(_ request: HTTPRequest) -> Data {
         // Health is unauthenticated so a script can check "is Flow up" cheaply; it
         // reveals nothing but the version and whether the app is ready.
-        if request.path == "/v1/health" {
+        if request.method == "GET", request.path == "/v1/health" {
             return json([
                 "ok": true,
                 "version": Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?",
@@ -146,7 +160,7 @@ final class FlowServer {
             return json(["days": days])
 
         case ("GET", "/v1/history"):
-            let limit = Int(request.query["limit"] ?? "") ?? 50
+            let limit = min(max(Int(request.query["limit"] ?? "") ?? 50, 0), 500)
             let query = request.query["q"]
             let rows = env.library.dictations
                 .filter { record in
@@ -154,7 +168,7 @@ final class FlowServer {
                     return record.raw.localizedCaseInsensitiveContains(query)
                         || record.cleaned.localizedCaseInsensitiveContains(query)
                 }
-                .prefix(max(0, limit))
+                .prefix(limit)
                 .map { record -> [String: Any] in
                     [
                         "id": record.id.uuidString,
@@ -236,10 +250,12 @@ private struct HTTPRequest {
     var body = Data()
 
     var bearer: String? {
-        headers["authorization"]?
-            .split(separator: " ", maxSplits: 1)
-            .last
-            .map(String.init)
+        guard let authorization = headers["authorization"] else { return nil }
+        let parts = authorization.split(separator: " ", maxSplits: 1)
+        guard parts.count == 2, parts[0].caseInsensitiveCompare("Bearer") == .orderedSame else {
+            return nil
+        }
+        return String(parts[1])
     }
 
     var jsonBody: [String: Any]? {
@@ -278,7 +294,9 @@ private struct HTTPRequest {
                 parts[1].trimmingCharacters(in: .whitespaces)
         }
 
-        let expected = Int(headers["content-length"] ?? "0") ?? 0
+        guard let expected = Int(headers["content-length"] ?? "0"),
+              expected >= 0,
+              expected <= maximumHTTPRequestBytes else { return nil }
         let bodyStart = headEnd.upperBound
         let available = data.count - bodyStart
         guard available >= expected else { return nil }

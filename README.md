@@ -10,8 +10,8 @@ network at dictation time.
 Run this once, before anything else:
 
 ```sh
-./make-cert.sh     # creates a stable local signing identity
-./build.sh
+scripts/make-cert.sh     # creates a stable local signing identity
+scripts/build.sh
 ```
 
 Skipping it is the single most confusing thing you can do to yourself. See
@@ -19,16 +19,16 @@ Skipping it is the single most confusing thing you can do to yourself. See
 
 ## Build and run
 
-There is no Xcode on this machine, so the app is built with SwiftPM and the bundle is
-assembled by hand:
+SwiftPM is the source of truth. The build script compiles the executable, assembles the
+app bundle, and signs it:
 
 ```sh
-./build.sh            # release; ./build.sh debug for a debug build
+scripts/build.sh            # release; pass debug for a debug build
 open build/Flow.app
 ```
 
-`build.sh` compiles the binary, assembles `Flow.app`, and signs it with the local
-`Flow Dev` identity created by `make-cert.sh` (falling back to ad-hoc, with a warning,
+`scripts/build.sh` signs with the local `Flow Dev` identity created by
+`scripts/make-cert.sh` (falling back to ad-hoc, with a warning,
 if you have not run it).
 
 Flow is an accessory app. It lives in the menu bar with no dock icon.
@@ -36,7 +36,7 @@ Flow is an accessory app. It lives in the menu bar with no dock icon.
 ### Verification
 
 ```sh
-./build/Flow.app/Contents/MacOS/Flow --self-check
+scripts/check.sh
 ```
 
 94 checks covering the SQLite store, retention, search, record derivation, statistics,
@@ -61,7 +61,7 @@ An ad-hoc signature (`codesign -s -`) has a designated requirement of
 treats each build as a different app. The TCC grant is still pinned to the old hash, so
 `AXIsProcessTrusted()` returns false while the switch sits there looking enabled.
 
-`./make-cert.sh` fixes it by creating a self-signed identity in its own keychain (no
+`scripts/make-cert.sh` fixes it by creating a self-signed identity in its own keychain (no
 login-keychain password needed). The requirement becomes:
 
 ```
@@ -125,14 +125,18 @@ Voice commands ride the same round trip as ordinary dictation: "scratch that",
 
 ```
 Sources/Flow/
-  FlowApp.swift          scenes, app delegate, commands
+  App/                   scenes, app delegate, commands
+  Diagnostics/           application-level self-checks
   Dictation/             capture, speech pipeline, cleanup, lexicon, controller
   Insertion/             AX + paste inserter, front-app detection, permissions
   Hotkey/                push-to-talk event tap
   Panel/                 non-activating NSPanel, waveform, levels
   Store/                 records, HistoryStore protocol, SQLite + memory stores
   Window/                main window, browsers, note editor, settings, menu bar
-  Support/               settings, login item, environment, self-check
+  Support/               settings, login item, environment, local API
+
+AppBundle/               Info.plist and signing entitlements
+scripts/                 build, verification, certificate, and packaging tools
 ```
 
 ## Statistics
@@ -180,9 +184,9 @@ curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8787/v1/stats
 ## Shipping
 
 ```sh
-./package.sh                                          # ad-hoc DMG, not notarized
-DEVELOPER_ID="Developer ID Application: You (TEAM)" ./package.sh
-DEVELOPER_ID=... NOTARY_PROFILE=flow ./package.sh     # sign, notarize, staple
+scripts/package.sh                                          # ad-hoc DMG, not notarized
+DEVELOPER_ID="Developer ID Application: You (TEAM)" scripts/package.sh
+DEVELOPER_ID=... NOTARY_PROFILE=flow scripts/package.sh     # sign, notarize, staple
 ```
 
 Store the notary profile once:
@@ -209,8 +213,8 @@ win. Hence opt-in, with a discard button.
 
 ## Where the toolchain changed the design
 
-This machine has no Xcode and runs macOS 26.5, not the macOS 27 the design assumed.
-Every deviation below is forced by the toolchain, not a change of design.
+The first implementation used Command Line Tools on macOS 26.5. The repository still
+avoids Xcode-only project files so command-line and Xcode builds share the same package.
 
 **SwiftData → SQLite.** `@Model` is a macro whose plugin ships with Xcode, not with the
 Command Line Tools, so it cannot compile here. Persistence sits behind the
@@ -233,8 +237,9 @@ Progressive is the one that emits volatile results, which is what makes it feel 
 **KeyboardShortcuts (SPM) → a CGEvent tap.** Push-to-talk needs both key edges; a
 registered hotkey only reports that it fired. The tap also drops a network dependency.
 
-**`swift test` → `--self-check`.** Neither XCTest nor the swift-testing runtime ships
-with the Command Line Tools, so the checks live in the app behind a flag.
+**Application self-checks.** The original Command Line Tools environment lacked the
+XCTest and Swift Testing runtimes, so the checks live behind the app's `--self-check`
+flag. `scripts/check.sh` builds the app and runs that suite.
 
 ## Fixed since the first build
 
@@ -274,18 +279,14 @@ nothing" from "no sound reached the microphone" and says which.
 
 ## Known limitations
 
-- **Cleanup is off on this Mac.** `SystemLanguageModel.availability` reports
-  `appleIntelligenceNotEnabled`, so Flow inserts raw transcripts and says so in the
-  menu bar and the panel. Turn on Apple Intelligence in System Settings and cleanup
-  starts working with no rebuild.
-- **macOS 27 polish is absent.** The SDK here is 26.5, so the Golden Gate refinements
-  (tint slider, tighter corners) have nothing to compile against. The layout is plain
-  `NavigationSplitView` and will pick them up.
+- **Cleanup depends on Apple Intelligence.** If `SystemLanguageModel.availability`
+  reports that Apple Intelligence is disabled or not ready, Flow inserts raw
+  transcripts and reports the reason in the menu bar and panel.
 - **Clipboard restore window.** The paste path holds your clipboard for ~600 ms. Copy
   something in exactly that window and you lose it. Acceptable.
 - **Notarization is unexecuted.** `notarytool` and `stapler` are present, but this Mac
-  has no signing identities, so `package.sh`'s notarize path has never run. The DMG
-  build path has: it mounts, and the app inside it validates.
+  has no Developer ID identity, so `scripts/package.sh`'s notarize path has never run.
+  The DMG mounts, and the app inside it validates.
 - **The dictation loop is unverified end to end.** Transcription, insertion, and the
   panel all need Microphone and Accessibility grants, which only you can give. What has
   been verified: the app builds, launches, stays resident, creates its database, and

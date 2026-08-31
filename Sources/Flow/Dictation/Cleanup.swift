@@ -156,7 +156,7 @@ actor CleanupService {
             let response = try await session.respond(
                 to: trimmed,
                 schema: schema,
-                options: GenerationOptions(sampling: .greedy)
+                options: GenerationOptions(samplingMode: .greedy)
             )
             return try parse(response.content, fallback: trimmed)
         } catch {
@@ -300,7 +300,7 @@ actor CleanupService {
         let response = try await session.respond(
             to: String(text.prefix(4000)),
             schema: schema,
-            options: GenerationOptions(sampling: .greedy)
+            options: GenerationOptions(samplingMode: .greedy)
         )
         return NoteSummary(
             title: (try? response.content.value(String.self, forProperty: "title")) ?? "Note",
