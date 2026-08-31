@@ -7,16 +7,15 @@ network at dictation time.
 
 ## Install
 
-Flow requires macOS 26 or newer, a Swift 6 toolchain, and GitHub CLI access to this
-private repository. Sign in once with `gh auth login`, then run this single command:
+Flow requires macOS 26 or newer and a Swift 6 toolchain. Run this single command:
 
 ```sh
-GITHUB_TOKEN="$(gh auth token)" bash <(curl -fsSL -H "Authorization: Bearer $(gh auth token)" -H "Accept: application/vnd.github.raw+json" https://api.github.com/repos/tashifkhan/flow-dictate/contents/scripts/bootstrap.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/tashifkhan/flow-dictate/main/scripts/bootstrap.sh)
 ```
 
-The command downloads `scripts/bootstrap.sh` from `main`, clones the private repository,
-builds the app, installs it in `/Applications`, and opens it. Read the script first if
-you do not want to execute remote code directly.
+The command downloads `scripts/bootstrap.sh` from `main`, clones the repository, builds
+the app, installs it in `/Applications`, and opens it. Read the script first if you do
+not want to execute remote code directly.
 
 From an existing checkout, run:
 
