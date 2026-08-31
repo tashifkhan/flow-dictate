@@ -1,9 +1,8 @@
 # Flow
 
-A Wispr Flow clone for macOS. Hold a key, talk, let go,
-and cleaned-up text lands at your cursor. Everything runs on device: Apple's
-`SpeechAnalyzer` for transcription, Apple Intelligence for cleanup, no API keys and no
-network at dictation time.
+A local-first macOS dictation app inspired by Wispr Flow. Hold a key, speak, release it,
+and Flow transcribes, cleans up, and inserts the text at your cursor using Apple's
+on-device speech and language APIs. No account, API key, or audio upload is required.
 
 ## Install
 
