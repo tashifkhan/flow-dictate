@@ -5,17 +5,38 @@ and cleaned-up text lands at your cursor. Everything runs on device: Apple's
 `SpeechAnalyzer` for transcription, Apple Intelligence for cleanup, no API keys and no
 network at dictation time.
 
-## First run
+## Install
 
-Run this once, before anything else:
+Flow requires macOS 26 or newer and a Swift 6 toolchain. This command downloads the
+repository, builds the app, installs it in `/Applications`, and opens it:
 
 ```sh
-scripts/make-cert.sh     # creates a stable local signing identity
-scripts/build.sh
+bash <(curl -fsSL https://raw.githubusercontent.com/tashifkhan/dictate/main/scripts/bootstrap.sh)
 ```
 
-Skipping it is the single most confusing thing you can do to yourself. See
-[Permissions that will not stick](#permissions-that-will-not-stick).
+The command runs `scripts/bootstrap.sh` from the `main` branch. Read that file first if
+you do not want to execute a remote script directly.
+
+From an existing checkout, run:
+
+```sh
+scripts/make-cert.sh
+scripts/install.sh
+```
+
+The scripts create a stable local signing certificate, build a release app, replace
+`/Applications/Flow.app`, verify its signature, and open it. macOS then asks for
+Microphone and Accessibility access. Grant both permissions from Flow's setup window.
+
+Use the same command after pulling a new version:
+
+```sh
+scripts/install.sh
+```
+
+Do not skip `scripts/make-cert.sh` on a development Mac. Without its stable local
+certificate, macOS treats each build as a different app and the permission grants stop
+working. See [Permissions that will not stick](#permissions-that-will-not-stick).
 
 ## Build and run
 
@@ -23,8 +44,9 @@ SwiftPM is the source of truth. The build script compiles the executable, assemb
 app bundle, and signs it:
 
 ```sh
-scripts/build.sh            # release; pass debug for a debug build
-open build/Flow.app
+scripts/run.sh               # debug build and launch
+scripts/run.sh release       # release build and launch
+scripts/build.sh debug       # build without launching
 ```
 
 `scripts/build.sh` signs with the local `Flow Dev` identity created by
@@ -136,7 +158,7 @@ Sources/Flow/
   Support/               settings, login item, environment, local API
 
 AppBundle/               Info.plist and signing entitlements
-scripts/                 build, verification, certificate, and packaging tools
+scripts/                 build, run, install, verification, certificate, and packaging tools
 ```
 
 ## Statistics

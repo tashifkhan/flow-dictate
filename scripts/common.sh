@@ -7,10 +7,11 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 BUILD_DIR="$PROJECT_ROOT/build"
 APP_BUNDLE="$BUILD_DIR/Flow.app"
+INSTALLED_APP="/Applications/Flow.app"
 INFO_PLIST="$PROJECT_ROOT/AppBundle/Info.plist"
 ENTITLEMENTS="$PROJECT_ROOT/AppBundle/Flow.entitlements"
 
-readonly SCRIPT_DIR PROJECT_ROOT BUILD_DIR APP_BUNDLE INFO_PLIST ENTITLEMENTS
+readonly SCRIPT_DIR PROJECT_ROOT BUILD_DIR APP_BUNDLE INSTALLED_APP INFO_PLIST ENTITLEMENTS
 
 require_command() {
     command -v "$1" >/dev/null 2>&1 || {

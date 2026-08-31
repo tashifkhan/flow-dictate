@@ -42,26 +42,25 @@ codesign --verify --deep --strict "$APP_BUNDLE"
 echo "built $APP_BUNDLE"
 
 if [[ "${FLOW_INSTALL:-0}" == "1" ]]; then
-    DESTINATION="/Applications/Flow.app"
     WAS_RUNNING=""
 
-    if pgrep -f "$DESTINATION/Contents/MacOS/Flow" >/dev/null 2>&1; then
+    if pgrep -f "$INSTALLED_APP/Contents/MacOS/Flow" >/dev/null 2>&1; then
         WAS_RUNNING=1
         osascript -e 'tell application "Flow" to quit' >/dev/null 2>&1 || true
         for _ in 1 2 3 4 5; do
-            pgrep -f "$DESTINATION/Contents/MacOS/Flow" >/dev/null 2>&1 || break
+            pgrep -f "$INSTALLED_APP/Contents/MacOS/Flow" >/dev/null 2>&1 || break
             sleep 0.4
         done
-        pkill -f "$DESTINATION/Contents/MacOS/Flow" >/dev/null 2>&1 || true
+        pkill -f "$INSTALLED_APP/Contents/MacOS/Flow" >/dev/null 2>&1 || true
     fi
 
-    rm -rf -- "$DESTINATION"
-    ditto "$APP_BUNDLE" "$DESTINATION"
-    codesign --verify --deep --strict "$DESTINATION"
-    echo "installed $DESTINATION"
+    rm -rf -- "$INSTALLED_APP"
+    ditto "$APP_BUNDLE" "$INSTALLED_APP"
+    codesign --verify --deep --strict "$INSTALLED_APP"
+    echo "installed $INSTALLED_APP"
 
     if [[ -n "$WAS_RUNNING" ]]; then
-        open "$DESTINATION"
+        open "$INSTALLED_APP"
         echo "relaunched Flow"
     fi
 fi
