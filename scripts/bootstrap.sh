@@ -22,7 +22,13 @@ TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/flow-install.XXXXXX")"
 trap 'rm -rf -- "$TEMP_DIR"' EXIT
 
 echo "downloading Flow"
-git clone --quiet --depth 1 --branch "$BRANCH" "$REPOSITORY_URL" "$TEMP_DIR/dictate"
+if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+    BASIC_AUTH="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64)"
+    git -c "http.extraHeader=Authorization: Basic $BASIC_AUTH" \
+        clone --quiet --depth 1 --branch "$BRANCH" "$REPOSITORY_URL" "$TEMP_DIR/dictate"
+else
+    git clone --quiet --depth 1 --branch "$BRANCH" "$REPOSITORY_URL" "$TEMP_DIR/dictate"
+fi
 cd "$TEMP_DIR/dictate"
 
 scripts/make-cert.sh
