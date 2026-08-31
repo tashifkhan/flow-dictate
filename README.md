@@ -1,6 +1,6 @@
 # Flow
 
-A Wispr Flow clone for macOS, built from [PLAN.md](PLAN.md). Hold a key, talk, let go,
+A Wispr Flow clone for macOS. Hold a key, talk, let go,
 and cleaned-up text lands at your cursor. Everything runs on device: Apple's
 `SpeechAnalyzer` for transcription, Apple Intelligence for cleanup, no API keys and no
 network at dictation time.
