@@ -9,6 +9,7 @@ enum SidebarItem: Hashable {
     case pinned
     case notes
     case note(UUID)
+    case settings(SettingsPane)
 }
 
 /// Two view modes, toggled from the toolbar: a Messages-style list, and a grid where
@@ -82,6 +83,13 @@ struct MainWindow: View {
                     .tag(SidebarItem.stats)
                 label("Pinned", "pin.fill", .orange, count: env.library.pinnedDictations.count)
                     .tag(SidebarItem.pinned)
+            }
+
+            Section("Settings") {
+                ForEach(SettingsPane.allCases) { pane in
+                    Label(pane.title, systemImage: pane.icon)
+                        .tag(SidebarItem.settings(pane))
+                }
             }
 
             Section("Scratchpad") {
@@ -158,6 +166,8 @@ struct MainWindow: View {
             } else {
                 ContentUnavailableView("Note deleted", systemImage: "trash")
             }
+        case .settings(let pane):
+            SettingsView(env: env, pane: pane)
         case nil:
             ContentUnavailableView("Pick something on the left", systemImage: "sidebar.left")
         }

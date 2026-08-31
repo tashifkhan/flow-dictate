@@ -5,6 +5,10 @@ import SwiftUI
 struct MenuBarView: View {
     @Bindable var env: AppEnvironment
     @Environment(\.openWindow) private var openWindow
+    /// The supported way in since macOS 14. The `showSettingsWindow:` selector this
+    /// replaced is private, was renamed once already, and fails silently when it stops
+    /// matching — which looks exactly like the menu item doing nothing.
+    @Environment(\.openSettings) private var openSettings
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -15,7 +19,7 @@ struct MenuBarView: View {
             Divider()
             footer
         }
-        .frame(width: 320)
+        .frame(width: 360)
         .onAppear {
             env.showMainWindow = { openWindow(id: FlowApp.mainWindowID) }
             env.controller.refreshCleanupAvailability()
@@ -105,9 +109,15 @@ struct MenuBarView: View {
 
     // MARK: - Recent
 
+    /// One row is a two-line title plus a caption; 52 is the honest average of the
+    /// one-line and two-line cases.
+    private static let rowHeight: CGFloat = 52
+    /// Tall enough to browse, short enough that the menu never runs off a laptop screen.
+    private static let maxListHeight: CGFloat = 380
+
     @ViewBuilder
     private var recent: some View {
-        let items = env.library.recent(20)
+        let items = env.library.recent(50)
         if items.isEmpty {
             Text("Nothing dictated yet.")
                 .font(.caption)
@@ -126,7 +136,10 @@ struct MenuBarView: View {
                     }
                 }
             }
-            .frame(maxHeight: 260)
+            // A ScrollView has no intrinsic height, so in this VStack it collapses to a
+            // single clipped row no matter what maxHeight says. Size it to the content
+            // instead, and only then cap it.
+            .frame(height: min(CGFloat(items.count) * Self.rowHeight, Self.maxListHeight))
         }
     }
 
@@ -145,8 +158,10 @@ struct MenuBarView: View {
                 NSApp.activate(ignoringOtherApps: true)
             }
             menuButton("Settings…", "gearshape") {
+                // Accessory apps are not active when the menu is clicked, and the
+                // settings window opens behind everything if we do not fix that first.
                 NSApp.activate(ignoringOtherApps: true)
-                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+                openSettings()
             }
             Divider().padding(.vertical, 4)
             menuButton("Quit Flow", "power") { NSApp.terminate(nil) }
