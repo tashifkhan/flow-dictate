@@ -195,12 +195,52 @@ actor CleanupService {
             "Past corrections from this user: \(pairs.joined(separator: "; "))."
         }
 
+        "Never shorten, summarise, or drop sentences. Every sentence spoken must appear."
+        "If you are unsure whether something is a command, it is not one. Use mode=insert."
+
         "Classify the speech before you clean it."
-        "mode=insert for ordinary speech."
-        "mode=delete when they say to scratch, undo, or delete what was just said; put the words to remove in target."
-        "mode=replace when they say to replace or change X to Y; put X in target and Y in text."
+        "mode=insert for ordinary speech. This is almost always the answer."
+        "mode=delete only when they directly tell you to scratch, undo, or delete what was just said; put the words to remove in target."
+        "mode=replace only when they directly tell you to replace or change X to Y; put X in target and Y in text."
+        "A sentence that merely talks about changing, fixing, or redoing something is ordinary speech, not a command."
         "mode=format for new line, new paragraph, all caps, or raw mode."
-        "For mode=insert, text is the cleaned transcript and nothing else."
+        "For mode=insert, text is the cleaned transcript in full and nothing else."
+    }
+
+    /// Words that carry no meaning, so removing them is cleanup rather than loss.
+    private static let filler: Set<String> = [
+        "um", "uh", "erm", "er", "ah", "hmm", "like", "basically",
+        "actually", "literally", "yeah", "okay", "so",
+    ]
+
+    /// The phrases that make something a command. Anything else is dictation.
+    private static let commandPhrases = [
+        "scratch that", "scratch this", "delete that", "delete this",
+        "undo that", "undo this", "remove that", "take that back",
+        "replace", "change that to", "change this to",
+        "new line", "new paragraph", "all caps",
+    ]
+
+    static func soundsLikeCommand(_ raw: String) -> Bool {
+        let lowered = raw.lowercased()
+        return commandPhrases.contains { lowered.contains($0) }
+    }
+
+    /// The meaningful words in a transcript, for comparing what went in with what
+    /// came out.
+    static func contentWords(_ text: String) -> [String] {
+        text.lowercased()
+            .split(whereSeparator: { !$0.isLetter && !$0.isNumber && $0 != "'" })
+            .map(String.init)
+            .filter { !filler.contains($0) }
+    }
+
+    /// Whether the cleaned text still says what was said. Stripping filler and fixing
+    /// punctuation barely moves this; summarising fails it.
+    static func isFaithful(_ cleaned: String, to raw: String) -> Bool {
+        let spoken = contentWords(raw).count
+        guard spoken > 0 else { return true }
+        return Double(contentWords(cleaned).count) >= Double(spoken) * 0.6
     }
 
     private func parse(_ content: GeneratedContent, fallback: String) throws -> Decision {
@@ -214,6 +254,23 @@ actor CleanupService {
         // A cleanup pass that returns nothing is a failed cleanup pass, not an
         // instruction to type nothing.
         if mode == .insert && cleaned.isEmpty { return .raw(fallback) }
+
+        // Commands are things you say on purpose. Left to itself the model reads a
+        // sentence *about* fixing something as an instruction to fix something, and the
+        // text it "replaces" is whatever the field already contained.
+        if mode == .delete || mode == .replace, !Self.soundsLikeCommand(fallback) {
+            log.notice("model proposed \(rawMode, privacy: .public) with no command phrase; treating as dictation")
+            return Self.isFaithful(cleaned, to: fallback)
+                ? Decision(mode: .insert, text: cleaned, target: nil)
+                : .raw(fallback)
+        }
+
+        // Cleanup tidies; it does not summarise. A transcript that comes back with most
+        // of it missing is a failed pass, and the raw text beats a truncated one.
+        if mode == .insert, !Self.isFaithful(cleaned, to: fallback) {
+            log.notice("cleanup dropped too much of the transcript, inserting raw")
+            return .raw(fallback)
+        }
 
         return Decision(
             mode: mode,
