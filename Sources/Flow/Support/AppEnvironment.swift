@@ -103,6 +103,14 @@ final class AppEnvironment {
             }
         }
 
+        // One press starts, the next stops. Same path as the menu bar's mic button.
+        hotkey.onToggle = { [weak self] in self?.toggleFromUI() }
+        hotkey.onStop = { [weak self] in
+            guard let self else { return }
+            self.controller.end()
+            self.hidePanelWhenSettled()
+        }
+
         hotkey.isDictating = { [weak self] in self?.controller.phase.isBusy ?? false }
         hotkey.onCancel = { [weak self] in
             self?.controller.cancel()

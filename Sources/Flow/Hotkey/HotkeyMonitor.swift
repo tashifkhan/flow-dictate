@@ -18,6 +18,10 @@ final class HotkeyMonitor {
 
     var onPress: () -> Void = {}
     var onRelease: () -> Void = {}
+    /// Toggle mode: one edge, meaning "start if idle, stop if running".
+    var onToggle: () -> Void = {}
+    /// ⌘↩ while recording: stop and insert, without reaching for the hotkey again.
+    var onStop: () -> Void = {}
     /// Escape, for a dictation you thought better of. Only consulted while one is running.
     var onCancel: () -> Void = {}
     /// Asked before Escape is treated as a cancel, so Escape stays Escape the rest of the time.
@@ -26,6 +30,7 @@ final class HotkeyMonitor {
     /// Read fresh on every event so changing the setting takes effect immediately,
     /// without tearing the tap down.
     private var key: Hotkey { Settings.shared.hotkey }
+    private var activation: HotkeyActivation { Settings.shared.activation }
 
     enum HotkeyError: Error, LocalizedError {
         case tapFailed
@@ -96,6 +101,14 @@ final class HotkeyMonitor {
             return
         }
 
+        // ⌘↩ ends a running dictation. Only while one is running, so Return keeps
+        // meaning Return the rest of the time.
+        if type == .keyDown, keyCode == kVK_Return || keyCode == kVK_ANSI_KeypadEnter,
+           event.flags.contains(.maskCommand), isDictating() {
+            onStop()
+            return
+        }
+
         if hotkey.isModifierOnly {
             guard type == .flagsChanged, keyCode == hotkey.keyCode else { return }
             set(down: event.flags.contains(hotkey.flags))
@@ -117,6 +130,13 @@ final class HotkeyMonitor {
     private func set(down: Bool) {
         guard down != isDown else { return }
         isDown = down
+
+        // Toggle mode acts on the press edge and ignores the release entirely, so the
+        // key can be tapped rather than held.
+        guard activation == .hold else {
+            if down { onToggle() }
+            return
+        }
         down ? onPress() : onRelease()
     }
 }

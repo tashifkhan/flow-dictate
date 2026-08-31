@@ -10,6 +10,21 @@ enum PanelPlacement: String, CaseIterable, Identifiable, Sendable {
     var label: String { self == .bottomCenter ? "Bottom center" : "Near the cursor" }
 }
 
+/// Whether the hotkey is held down or pressed once.
+enum HotkeyActivation: String, CaseIterable, Identifiable, Sendable {
+    case hold, toggle
+
+    var id: String { rawValue }
+    var label: String { self == .hold ? "Hold to talk" : "Press to start and stop" }
+
+    var detail: String {
+        switch self {
+        case .hold: "Recording lasts as long as you hold the key."
+        case .toggle: "Press once to start. Press again, or \u{2318}\u{21A9}, to stop. Esc cancels."
+        }
+    }
+}
+
 /// How much panel you want on screen while you talk.
 enum PanelSize: String, CaseIterable, Identifiable, Sendable {
     case compact, standard
@@ -43,6 +58,7 @@ final class Settings {
             defaults.set(data, forKey: K.hotkey)
         }
     }
+    var activation: HotkeyActivation { didSet { defaults.set(activation.rawValue, forKey: K.activation) } }
     var placement: PanelPlacement { didSet { defaults.set(placement.rawValue, forKey: K.placement) } }
     /// Empty means "follow the system default". Stored as a device UID, which survives
     /// reboots and re-pairings; the numeric CoreAudio id does not.
@@ -72,6 +88,7 @@ final class Settings {
     private enum K {
         static let hotkey = "hotkeyV2"
         static let legacyKey = "pushToTalkKey"
+        static let activation = "hotkeyActivation"
         static let placement = "panelPlacement"
         static let inputDevice = "inputDeviceUID"
         static let panelSize = "panelSize"
@@ -110,6 +127,7 @@ final class Settings {
             default: hotkey = .fn
             }
         }
+        activation = HotkeyActivation(rawValue: defaults.string(forKey: K.activation) ?? "") ?? .hold
         placement = PanelPlacement(rawValue: defaults.string(forKey: K.placement) ?? "") ?? .bottomCenter
         inputDeviceUID = defaults.string(forKey: K.inputDevice) ?? ""
         panelSize = PanelSize(rawValue: defaults.string(forKey: K.panelSize) ?? "") ?? .compact

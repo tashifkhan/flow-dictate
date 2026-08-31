@@ -210,7 +210,13 @@ enum SelfCheck {
         expect(Hotkey.fn.isModifierOnly, "fn is a modifier-only hotkey")
         expect(Hotkey.fn.label == "fn (globe)", "and names itself the way the key is labelled")
         expect(Hotkey.rightOption.label == "Right ⌥", "right option reads as the symbol")
-        expect(Hotkey.presets.allSatisfy(\.isModifierOnly), "every preset is holdable")
+        expect(Hotkey.holdPresets.allSatisfy(\.isModifierOnly), "every hold preset is holdable")
+        expect(Hotkey.comboPresets.allSatisfy { !$0.isModifierOnly },
+               "combo presets are not modifier-only")
+        expect(Hotkey.comboPresets.allSatisfy { $0.modifiers & Hotkey.modifierMask != 0 },
+               "and every one carries a modifier, so it cannot fire while you type")
+        expect(Hotkey.optionCommandD.label == "⌥⌘D", "a combo reads as its symbols")
+        expect(Hotkey.hyperD.label == "⌃⌥⇧⌘D", "and hyper spells all four out")
         expect(Hotkey.fn.isPreset, "a preset knows it is one")
 
         let combo = Hotkey.combo(

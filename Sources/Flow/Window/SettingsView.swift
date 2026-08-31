@@ -86,9 +86,18 @@ struct SettingsView: View {
     private var general: some View {
         Form {
             Section {
-                LabeledContent("Hold to talk") {
+                LabeledContent(settings.activation == .hold ? "Hold to talk" : "Start and stop") {
                     HotkeyRecorder(hotkey: $settings.hotkey) { env.hotkeyChanged() }
                 }
+
+                Picker("Trigger", selection: $settings.activation) {
+                    ForEach(HotkeyActivation.allCases) { Text($0.label).tag($0) }
+                }
+                .onChange(of: settings.activation) { _, _ in env.hotkeyChanged() }
+
+                Text(settings.activation.detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
 
                 Picker("Panel appears", selection: $settings.placement) {
                     ForEach(PanelPlacement.allCases) { Text($0.label).tag($0) }

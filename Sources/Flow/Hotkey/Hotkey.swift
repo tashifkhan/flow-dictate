@@ -30,7 +30,29 @@ struct Hotkey: Codable, Equatable, Sendable, Hashable {
     static let rightCommand = Hotkey(keyCode: kVK_RightCommand, modifiers: CGEventFlags.maskCommand.rawValue, isModifierOnly: true)
     static let rightControl = Hotkey(keyCode: kVK_RightControl, modifiers: CGEventFlags.maskControl.rawValue, isModifierOnly: true)
 
-    static let presets: [Hotkey] = [.fn, .rightOption, .rightCommand, .rightControl]
+    /// Combos, for when every spare modifier is already taken. These suit toggle mode,
+    /// where the key is tapped rather than held.
+    static let optionCommandD = Hotkey(
+        keyCode: kVK_ANSI_D,
+        modifiers: CGEventFlags.maskAlternate.rawValue | CGEventFlags.maskCommand.rawValue,
+        isModifierOnly: false
+    )
+    /// Hyper: ⌃⌥⇧⌘ together, which nothing else on macOS claims.
+    static let hyperD = Hotkey(
+        keyCode: kVK_ANSI_D,
+        modifiers: CGEventFlags.maskControl.rawValue | CGEventFlags.maskAlternate.rawValue
+            | CGEventFlags.maskShift.rawValue | CGEventFlags.maskCommand.rawValue,
+        isModifierOnly: false
+    )
+
+    /// Modifier-only presets: the ones that are pleasant to hold down.
+    static let holdPresets: [Hotkey] = [.fn, .rightOption, .rightCommand, .rightControl]
+
+    /// Combo presets. Every one carries at least one modifier, so it cannot fire while
+    /// you type. These suit toggle mode, where the key is tapped rather than held.
+    static let comboPresets: [Hotkey] = [.optionCommandD, .hyperD]
+
+    static let presets: [Hotkey] = holdPresets + comboPresets
 
     var isPreset: Bool { Self.presets.contains(self) }
 
