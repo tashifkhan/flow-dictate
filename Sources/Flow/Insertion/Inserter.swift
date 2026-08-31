@@ -31,7 +31,15 @@ final class Inserter {
 
     /// How long the real clipboard stays hostage. Long enough for the target app to
     /// service the paste, short enough that a copy in that window is a rare loss.
-    private static let clipboardRestoreDelay: Duration = .milliseconds(250)
+    ///
+    /// 250 ms was too tight for Chromium-based apps, which read the pasteboard on
+    /// another thread after the keystroke lands; losing that race pastes the restored
+    /// clipboard instead of the dictation.
+    private static let clipboardRestoreDelay: Duration = .milliseconds(600)
+
+    /// Hardware keystrokes are not instantaneous, and some apps drop a down/up pair that
+    /// arrives in the same instant.
+    private static let keyEventGap: useconds_t = 12_000
 
     // MARK: - Entry point
 
@@ -51,24 +59,46 @@ final class Inserter {
 
         case .delete:
             // "scratch that": take back exactly what we typed, nothing more.
-            let target = decision.target ?? lastInsert ?? ""
-            guard !target.isEmpty else { throw InsertError.empty }
+            guard let target = Self.retractable(target: decision.target, lastInsert: lastInsert) else {
+                throw InsertError.empty
+            }
             try backspace(count: target.count)
             lastInsert = nil
             return ""
 
         case .replace:
-            let target = decision.target ?? lastInsert ?? ""
-            guard !target.isEmpty else {
-                try insert(decision.text, in: app)
-                lastInsert = decision.text
-                return decision.text
+            guard let target = Self.retractable(target: decision.target, lastInsert: lastInsert) else {
+                // Nothing of ours to take back. Insert rather than delete: the field's
+                // existing contents are the user's, not ours to remove.
+                let text = decision.text
+                guard !text.isEmpty else { throw InsertError.empty }
+                try insert(text, in: app)
+                lastInsert = text
+                return text
             }
             try backspace(count: target.count)
             try insert(decision.text, in: app)
             lastInsert = decision.text
             return decision.text
         }
+    }
+
+    /// How much Flow is allowed to delete, which is only ever text Flow itself typed.
+    ///
+    /// `backspace` sends real Delete keystrokes: they take out whatever sits before the
+    /// cursor, with no idea who put it there. The target comes from the cleanup model,
+    /// and the model does sometimes propose one that was never inserted — a phrase from
+    /// the middle of your own sentence, say. Honouring that eats the user's text.
+    ///
+    /// So: nothing is retractable unless Flow has something to retract, and the request
+    /// has to be that text or its tail.
+    static func retractable(target requested: String?, lastInsert last: String?) -> String? {
+        guard let last, !last.isEmpty else { return nil }
+        guard let requested, !requested.isEmpty else { return last }
+        if requested == last { return requested }
+        // "scratch that" aimed at the end of what we typed is still ours to take back.
+        if last.hasSuffix(requested) { return requested }
+        return nil
     }
 
     /// Re-insert a history entry at the cursor.
@@ -95,13 +125,26 @@ final class Inserter {
               let element = FrontApp.focusedElement(pid: app.processIdentifier)
         else { return false }
 
+        // Read first, so the write can be checked rather than believed.
+        let before = FrontApp.string(element, kAXValueAttribute as String)
+
         let result = AXUIElementSetAttributeValue(
             element, kAXSelectedTextAttribute as CFString, text as CFString
         )
-        if result != .success {
+        guard result == .success else {
             log.debug("AX insert unsupported here (\(result.rawValue)), falling back to paste")
+            return false
         }
-        return result == .success
+
+        // Electron and friends answer .success and then do nothing, which used to end the
+        // insertion right here: no text, and no paste attempt either. Believe the field,
+        // not the return code. When the value cannot be read at all there is nothing to
+        // compare, so the success stands.
+        if let before, let after = FrontApp.string(element, kAXValueAttribute as String), after == before {
+            log.debug("AX insert reported success but changed nothing, falling back to paste")
+            return false
+        }
+        return true
     }
 
     /// Save clipboard, paste, restore. The restore window is a few hundred ms; if you
@@ -142,6 +185,7 @@ final class Inserter {
         down?.flags = flags
         up?.flags = flags
         down?.post(tap: .cghidEventTap)
+        usleep(Self.keyEventGap)
         up?.post(tap: .cghidEventTap)
     }
 }

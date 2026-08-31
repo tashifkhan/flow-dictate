@@ -17,10 +17,37 @@ struct FrontApp: Sendable {
 
     /// Electron apps report AX support ranging from fine to fiction, which is why the
     /// paste path is the default for them.
-    var isElectron: Bool {
-        let known = ["com.tinyspeck.slackmacgap", "com.microsoft.VSCode", "com.hnc.Discord",
-                     "notion.id", "com.figma.Desktop", "com.spotify.client", "md.obsidian"]
-        return known.contains(bundleID)
+    ///
+    /// Decided in `current()` rather than here: a hardcoded allowlist silently mistreats
+    /// every Electron app nobody thought to add, and the failure is invisible — Electron
+    /// answers "success" to an Accessibility write and then does nothing with it.
+    var isElectron: Bool = false
+
+    /// The frameworks that mark a Chromium-backed app. Asking the bundle is the whole
+    /// test — there is no list of app names to keep up to date, and an app Flow has
+    /// never heard of is handled the same as one it has.
+    private static let chromiumFrameworks = [
+        "Electron Framework.framework",
+        "Chromium Embedded Framework.framework",
+    ]
+
+    /// Cached per bundle id: an app does not stop being Electron while it runs, and this
+    /// is on the path of every dictation.
+    @MainActor private static var electronCache: [String: Bool] = [:]
+
+    @MainActor
+    private static func detectElectron(_ app: NSRunningApplication, bundleID: String) -> Bool {
+        if let cached = electronCache[bundleID], !bundleID.isEmpty { return cached }
+
+        var found = false
+        if let frameworks = app.bundleURL?.appending(path: "Contents/Frameworks") {
+            let fm = FileManager.default
+            found = chromiumFrameworks.contains {
+                fm.fileExists(atPath: frameworks.appending(path: $0).path(percentEncoded: false))
+            }
+        }
+        if !bundleID.isEmpty { electronCache[bundleID] = found }
+        return found
     }
 
     @MainActor
@@ -29,8 +56,11 @@ struct FrontApp: Sendable {
         let name = app.localizedName ?? "another app"
         let bundleID = app.bundleIdentifier ?? ""
 
+        let electron = detectElectron(app, bundleID: bundleID)
+
         guard Permissions.hasAccessibility else {
-            return FrontApp(name: name, bundleID: bundleID, axRole: "text", isSecure: false)
+            return FrontApp(name: name, bundleID: bundleID, axRole: "text",
+                            isSecure: false, isElectron: electron)
         }
 
         let element = focusedElement(pid: app.processIdentifier)
@@ -42,7 +72,8 @@ struct FrontApp: Sendable {
         let secure = subrole == (kAXSecureTextFieldSubrole as String)
             || role == (kAXSecureTextFieldSubrole as String)
 
-        return FrontApp(name: name, bundleID: bundleID, axRole: friendly(role), isSecure: secure)
+        return FrontApp(name: name, bundleID: bundleID, axRole: friendly(role),
+                        isSecure: secure, isElectron: electron)
     }
 
     static func focusedElement(pid: pid_t) -> AXUIElement? {
