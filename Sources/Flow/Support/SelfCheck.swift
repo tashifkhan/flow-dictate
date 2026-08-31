@@ -117,6 +117,50 @@ enum SelfCheck {
         expect(Retention.forever.cutoff == nil, "forever has no cutoff")
         expect(Retention.thirtyDays.cutoff.map { $0 < .now } == true, "30 days cuts off in the past")
 
+        // MARK: Cleanup faithfulness
+
+        section("cleanup guards")
+        do {
+            let spoken = "How are we doing this? This is not correct. We cannot do this like this."
+
+            expect(!CleanupService.soundsLikeCommand(spoken),
+                   "a sentence about fixing something is not a command")
+            expect(CleanupService.soundsLikeCommand("scratch that"),
+                   "but scratch that is")
+            expect(CleanupService.soundsLikeCommand("replace Tashif with Taf"),
+                   "and so is an explicit replace")
+
+            expect(!CleanupService.isFaithful("We cannot do this like this", to: spoken),
+                   "dropping two thirds of a sentence is not cleanup")
+            expect(CleanupService.isFaithful(
+                       "How are we doing this? This is not correct. We cannot do this like this.",
+                       to: spoken),
+                   "punctuating the whole thing is")
+            expect(CleanupService.isFaithful("I think we should ship it.",
+                                             to: "um so i think we should uh ship it"),
+                   "and stripping filler still counts as faithful")
+            expect(CleanupService.isFaithful("anything", to: ""),
+                   "an empty transcript has nothing to lose")
+        }
+
+        // MARK: Retraction safety
+
+        section("retraction")
+        do {
+            expect(Inserter.retractable(target: "anything", lastInsert: nil) == nil,
+                   "with nothing inserted, nothing may be deleted")
+            expect(Inserter.retractable(target: nil, lastInsert: "hello there") == "hello there",
+                   "a bare scratch-that takes back the whole insert")
+            expect(Inserter.retractable(target: "hello there", lastInsert: "hello there") == "hello there",
+                   "an exact match is ours to take back")
+            expect(Inserter.retractable(target: "there", lastInsert: "hello there") == "there",
+                   "so is the tail of what we typed")
+            expect(Inserter.retractable(target: "the user's own sentence", lastInsert: "hello there") == nil,
+                   "a target we never typed is refused, so the field is left alone")
+            expect(Inserter.retractable(target: "hello", lastInsert: "hello there") == nil,
+                   "and a prefix is refused too: deleting it would eat the tail")
+        }
+
         // MARK: Lexicon matching
 
         section("lexicon")
@@ -132,6 +176,23 @@ enum SelfCheck {
                    "unrelated speech pulls in no vocabulary")
             lexicon.removeWord("Tashif")
             lexicon.removeWord("Cloudflare")
+        }
+
+        do {
+            let added = lexicon.addWords("Cloudflare, Wrangler\nDurable Objects;Hyperdrive\tR2")
+            expect(added == 5, "a mixed-separator paste splits into five words")
+            expect(lexicon.contains("Durable Objects"),
+                   "a multi-word entry survives splitting")
+            expect(lexicon.addWords("wrangler") == 0,
+                   "a duplicate is refused case-insensitively")
+            expect(lexicon.addWords("  \n , ; ") == 0,
+                   "separators alone add nothing")
+            expect(lexicon.exportedWords.split(separator: "\n").count == 5,
+                   "export writes one word per line")
+            for word in ["Cloudflare", "Wrangler", "Durable Objects", "Hyperdrive", "R2"] {
+                lexicon.removeWord(word)
+            }
+            expect(lexicon.exportedWords.isEmpty, "and removal empties it again")
         }
 
         // MARK: Decisions
