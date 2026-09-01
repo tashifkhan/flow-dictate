@@ -168,6 +168,9 @@ enum SelfCheck {
         expect(xcode.context == .development, "Xcode gets developer context")
         expect(xcode.context.recognitionHints.contains("TypeScript"),
                "developer context supplies technical recognition hints")
+        expect(["docs", "dev", "app", "bug", "build", "code", "fix", "PR", "test"]
+            .allSatisfy(xcode.context.recognitionHints.contains),
+            "developer hints include documentation and everyday engineering terms")
 
         let slack = FrontApp.inferContext(
             appName: "Slack", bundleID: "com.tinyspeck.slackmacgap"

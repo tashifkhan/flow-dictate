@@ -24,12 +24,16 @@ enum WritingContext: String, Sendable {
     var recognitionHints: [String] {
         guard self == .development else { return [] }
         return [
-            "API", "async", "await", "boolean", "CLI", "commit", "CSS", "database",
-            "debug", "dependency", "Docker", "endpoint", "enum", "Git", "GitHub",
-            "GraphQL", "HTML", "HTTP", "JavaScript", "JSON", "Kubernetes", "localhost",
-            "merge", "npm", "parameter", "PostgreSQL", "pull request", "Python", "React",
-            "repository", "runtime", "SQL", "Swift", "terminal", "TypeScript", "URL",
-            "variable", "Wrangler", "YAML",
+            "API", "app", "async", "await", "backend", "boolean", "branch", "bug", "build",
+            "changelog", "CLI", "code", "commit", "config", "CSS", "database", "debug",
+            "dependency", "deploy", "dev", "Docker", "docs", "documentation", "endpoint",
+            "enum", "error", "example", "file", "fix", "frontend", "function", "Git",
+            "GitHub", "GraphQL", "guide", "HTML", "HTTP", "issue", "JavaScript", "JSON",
+            "Kubernetes", "localhost", "log", "Markdown", "MDX", "merge", "npm", "parameter",
+            "PostgreSQL", "PR", "prod", "pull request", "Python", "React", "README",
+            "reference", "release", "repository", "request", "response", "runtime", "server",
+            "SQL", "staging", "Swift", "terminal", "test", "TypeScript", "URL", "variable",
+            "Wrangler", "YAML",
         ]
     }
 }
