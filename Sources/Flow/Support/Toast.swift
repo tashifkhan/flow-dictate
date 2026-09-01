@@ -25,6 +25,10 @@ enum Toast {
         post(title: "Inserted into \(app)", body: String(text.prefix(120)))
     }
 
+    static func copied(_ text: String) {
+        post(title: "Copied to clipboard", body: String(text.prefix(120)))
+    }
+
     static func blocked(_ reason: String) {
         post(title: "Flow didn't insert", body: reason)
     }

@@ -51,14 +51,18 @@ struct FrontApp: Sendable {
     var writingContext: WritingContext
     /// True when the focused element is a password field. Nothing is ever inserted here.
     var isSecure: Bool
+    /// False when focus is on a window, button, web page, or other non-editable element.
+    var hasTextTarget: Bool
 
     static let unknown = FrontApp(
         name: "another app", bundleID: "", axRole: "text",
-        destinationName: "another app", writingContext: .general, isSecure: false
+        destinationName: "another app", writingContext: .general,
+        isSecure: false, hasTextTarget: false
     )
     static let flowNote = FrontApp(
         name: "Flow", bundleID: "sh.taf.flow", axRole: "multi-line text",
-        destinationName: "a Flow note", writingContext: .document, isSecure: false
+        destinationName: "a Flow note", writingContext: .document,
+        isSecure: false, hasTextTarget: true
     )
 
     var appDescription: String { writingContext.description }
@@ -112,7 +116,8 @@ struct FrontApp: Sendable {
             return FrontApp(name: name, bundleID: bundleID, axRole: "text",
                             destinationName: inferred.destinationName,
                             writingContext: inferred.context,
-                            isSecure: false, isElectron: electron)
+                            isSecure: false, hasTextTarget: false,
+                            isElectron: electron)
         }
 
         let element = focusedElement(pid: app.processIdentifier)
@@ -133,11 +138,12 @@ struct FrontApp: Sendable {
         // grocery list into a password prompt is a one-star review generator.
         let secure = subrole == (kAXSecureTextFieldSubrole as String)
             || role == (kAXSecureTextFieldSubrole as String)
+        let editable = element.map { isEditable($0, role: role) } ?? false
 
         return FrontApp(name: name, bundleID: bundleID, axRole: friendly(role),
                         destinationName: inferred.destinationName,
                         writingContext: inferred.context, isSecure: secure,
-                        isElectron: electron)
+                        hasTextTarget: editable, isElectron: electron)
     }
 
     /// Classifies native apps by bundle id and web apps by hostname or window title.
@@ -231,6 +237,28 @@ struct FrontApp: Sendable {
         guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success,
               let text = value as? String else { return nil }
         return text
+    }
+
+    private static func isEditable(_ element: AXUIElement, role: String) -> Bool {
+        if roleAcceptsText(role) { return true }
+
+        var editableValue: CFTypeRef?
+        if AXUIElementCopyAttributeValue(
+            element, kAXIsEditableAttribute as CFString, &editableValue
+        ) == .success, let editable = editableValue as? Bool, editable {
+            return true
+        }
+
+        var settable = DarwinBoolean(false)
+        return AXUIElementIsAttributeSettable(
+            element, kAXSelectedTextAttribute as CFString, &settable
+        ) == .success && settable.boolValue
+    }
+
+    static func roleAcceptsText(_ role: String) -> Bool {
+        role == (kAXTextFieldRole as String)
+            || role == (kAXTextAreaRole as String)
+            || role == (kAXComboBoxRole as String)
     }
 
     private static func metadataString(_ element: AXUIElement, _ attribute: String) -> String? {

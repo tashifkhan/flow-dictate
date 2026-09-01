@@ -180,6 +180,9 @@ struct SetupView: View {
                 } else if case .inserted = env.controller.phase {
                     Label("That worked", systemImage: "checkmark.circle.fill")
                         .font(.caption).foregroundStyle(.green)
+                } else if case .copied = env.controller.phase {
+                    Label("Copied to clipboard", systemImage: "doc.on.clipboard.fill")
+                        .font(.caption).foregroundStyle(.green)
                 } else if !env.controller.transcript.isEmpty {
                     Text(env.controller.transcript).font(.caption).lineLimit(2)
                 }

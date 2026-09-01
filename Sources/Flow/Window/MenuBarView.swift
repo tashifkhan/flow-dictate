@@ -60,6 +60,7 @@ struct MenuBarView: View {
         case .recording: "Listening"
         case .processing: "Cleaning up"
         case .inserted: "Inserted"
+        case .copied: "Copied to clipboard"
         case .failed(let m): m
         }
     }

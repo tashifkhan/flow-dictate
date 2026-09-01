@@ -78,6 +78,13 @@ struct PanelView: View {
                 .lineLimit(1)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
+        case .copied:
+            Text("Copied to clipboard")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
         case .failed(let message):
             Text(message)
                 .font(.caption)
@@ -111,6 +118,9 @@ struct PanelView: View {
                 ProgressView().progressViewStyle(.circular).controlSize(.small)
             case .inserted:
                 Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+            case .copied:
+                Image(systemName: "doc.on.clipboard.fill")
                     .foregroundStyle(.green)
             case .failed:
                 Image(systemName: "exclamationmark.triangle.fill")
@@ -164,6 +174,16 @@ struct PanelView: View {
         case .inserted(let text):
             VStack(alignment: .leading, spacing: 2) {
                 Text("Inserted")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(text)
+                    .font(.callout)
+                    .lineLimit(2)
+            }
+
+        case .copied(let text):
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Copied to clipboard")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Text(text)

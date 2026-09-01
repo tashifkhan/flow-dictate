@@ -6,15 +6,21 @@ import OSLog
 
 /// Gets text to the cursor in whatever app has focus.
 ///
-/// Two paths, in order of preference: set the selected text through Accessibility,
-/// or save the clipboard, paste, and put the clipboard back. The paste path is the
-/// one that makes Electron apps behave, so it is the fallback that always works.
+/// With an editable cursor there are two paths: set selected text through
+/// Accessibility, or save the clipboard, paste, and restore it. With no editable
+/// cursor the text stays on the clipboard for the user.
 @MainActor
 final class Inserter {
     private let log = Logger(subsystem: "sh.taf.flow", category: "insert")
 
     /// What Flow last typed, so "scratch that" has something to scratch.
     private(set) var lastInsert: String?
+
+    struct Result: Sendable {
+        enum Destination: Sendable { case textField, clipboard }
+        var text: String
+        var destination: Destination
+    }
 
     enum InsertError: Error, LocalizedError {
         case secureField
@@ -43,11 +49,26 @@ final class Inserter {
 
     // MARK: - Entry point
 
-    /// Applies a decision at the cursor. Returns the text that actually landed.
+    /// Applies a decision at the cursor, or keeps ordinary dictated text on the
+    /// clipboard when there is no editable cursor.
     @discardableResult
-    func apply(_ decision: Decision, in app: FrontApp) throws -> String {
-        guard Permissions.hasAccessibility else { throw InsertError.noAccessibility }
+    func apply(_ decision: Decision, in app: FrontApp) throws -> Result {
         guard !app.isSecure else { throw InsertError.secureField }
+
+        if !app.hasTextTarget {
+            switch decision.mode {
+            case .insert, .format, .replace:
+                let text = decision.text
+                guard !text.isEmpty else { throw InsertError.empty }
+                copy(text)
+                lastInsert = nil
+                return Result(text: text, destination: .clipboard)
+            case .delete:
+                throw InsertError.empty
+            }
+        }
+
+        guard Permissions.hasAccessibility else { throw InsertError.noAccessibility }
 
         switch decision.mode {
         case .insert, .format:
@@ -55,7 +76,7 @@ final class Inserter {
             guard !text.isEmpty else { throw InsertError.empty }
             try insert(text, in: app)
             lastInsert = text
-            return text
+            return Result(text: text, destination: .textField)
 
         case .delete:
             // "scratch that": take back exactly what we typed, nothing more.
@@ -64,7 +85,7 @@ final class Inserter {
             }
             try backspace(count: target.count)
             lastInsert = nil
-            return ""
+            return Result(text: "", destination: .textField)
 
         case .replace:
             guard let target = Self.retractable(target: decision.target, lastInsert: lastInsert) else {
@@ -74,12 +95,12 @@ final class Inserter {
                 guard !text.isEmpty else { throw InsertError.empty }
                 try insert(text, in: app)
                 lastInsert = text
-                return text
+                return Result(text: text, destination: .textField)
             }
             try backspace(count: target.count)
             try insert(decision.text, in: app)
             lastInsert = decision.text
-            return decision.text
+            return Result(text: decision.text, destination: .textField)
         }
     }
 
@@ -102,9 +123,9 @@ final class Inserter {
     }
 
     /// Re-insert a history entry at the cursor.
-    func reinsert(_ text: String) throws {
+    func reinsert(_ text: String) throws -> Result {
         let app = FrontApp.current()
-        try apply(.raw(text), in: app)
+        return try apply(.raw(text), in: app)
     }
 
     func forgetLastInsert() { lastInsert = nil }
@@ -125,9 +146,6 @@ final class Inserter {
               let element = FrontApp.focusedElement(pid: app.processIdentifier)
         else { return false }
 
-        // Read first, so the write can be checked rather than believed.
-        let before = FrontApp.string(element, kAXValueAttribute as String)
-
         let result = AXUIElementSetAttributeValue(
             element, kAXSelectedTextAttribute as CFString, text as CFString
         )
@@ -136,15 +154,16 @@ final class Inserter {
             return false
         }
 
-        // Electron and friends answer .success and then do nothing, which used to end the
-        // insertion right here: no text, and no paste attempt either. Believe the field,
-        // not the return code. When the value cannot be read at all there is nothing to
-        // compare, so the success stands.
-        if let before, let after = FrontApp.string(element, kAXValueAttribute as String), after == before {
-            log.debug("AX insert reported success but changed nothing, falling back to paste")
-            return false
-        }
+        // Some apps update AXValue asynchronously. Reading it immediately and falling
+        // back when it still held the old value caused the text to land once through AX
+        // and a second time through paste. Electron bypasses this path entirely.
         return true
+    }
+
+    private func copy(_ text: String) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
     }
 
     /// Save clipboard, paste, restore. The restore window is a few hundred ms; if you

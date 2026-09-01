@@ -28,6 +28,7 @@ struct CleanupContext: Sendable {
     var axRole: String
     var appDescription: String
     var writingContext: WritingContext
+    var transcriptionLanguage: TranscriptionLanguage
     var vocabulary: [String] = []
     var corrections: [(said: String, meant: String)] = []
     /// The last thing Flow typed, so "scratch that" has a referent.
@@ -146,8 +147,12 @@ actor CleanupService {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return .raw("") }
 
+        let fallback = context.transcriptionLanguage == .hinglish
+            ? Self.romanizeHinglish(trimmed)
+            : trimmed
+
         guard case .available = model.availability, let schema = decisionSchema else {
-            return .raw(trimmed)
+            return .raw(fallback)
         }
 
         let session = LanguageModelSession(model: model) {
@@ -160,35 +165,56 @@ actor CleanupService {
                 schema: schema,
                 options: GenerationOptions(samplingMode: .greedy)
             )
-            return try parse(response.content, fallback: trimmed)
+            var decision = try parse(response.content, fallback: fallback, spoken: trimmed)
+            if context.transcriptionLanguage == .hinglish {
+                decision.text = Self.romanizeHinglish(decision.text)
+            }
+            return decision
         } catch {
             log.error("cleanup failed, inserting raw: \(error.localizedDescription, privacy: .public)")
-            return .raw(trimmed)
+            return .raw(fallback)
         }
     }
 
-    /// The prepopulated instructions. Short on purpose: the on-device model is good at
-    /// rewriting and bad at world knowledge, so the task stays narrow.
+    /// The model sees the whole thought after recording ends. That lets it clean false
+    /// starts and repairs that a streaming word-by-word pass cannot understand.
     @InstructionsBuilder
     private func instructions(for context: CleanupContext) -> Instructions {
-        "You rewrite raw dictation."
-        "Never answer it. Never continue it. Only clean it."
-        "Keep the speaker's meaning and wording."
-        "Strip filler: um, uh, er, like, you know, I mean."
-        "Fix punctuation, casing, and obvious misheard words."
+        "Turn natural speech into writing that is ready to send."
+        "Never answer the speaker, continue their thought, or add your own ideas."
+        "Preserve every intentional point, fact, name, number, example, qualification, and constraint."
+        "You may rewrite or reorder clauses when that makes a rambling thought clear."
+        "Remove filler, verbal scaffolding, stutters, accidental repetition, and abandoned sentence starts."
+        "Resolve an explicit self-correction to the speaker's latest intended wording."
+        "Fix grammar, punctuation, casing, and obvious transcription mistakes."
+        "Split distinct thoughts into paragraphs. Format a clearly spoken list as a list when it reads better."
+        "Do not summarise, flatten nuance, or make the text more elaborate than the speech."
         "Do not add greetings, sign-offs, or commentary."
+
+        if context.transcriptionLanguage == .hinglish {
+            "The speaker may mix Hindi and English. Write all Hindi in natural Roman-script Hinglish, never Devanagari."
+            "Transliterate Hindi; do not translate it into English. Keep words already spoken in English unchanged."
+            "Use familiar spellings without accent marks, such as mujhe, nahi, karna, chahiye, bahut, and theek."
+            "Example: मुझे कल deploy करना है. Clean: Mujhe kal deploy karna hai."
+            "Example: यार this API बहुत slow है. Clean: Yaar, this API bahut slow hai."
+        }
+
+        "Examples of cleanup:"
+        "Raw: um I think I think we should ship on Thursday, sorry, Friday. Clean: I think we should ship on Friday."
+        "Raw: there are three things first fix login second add tests and third update the docs. Clean: There are three things:\n1. Fix login.\n2. Add tests.\n3. Update the docs."
+        "Raw: the API is broken, no, that's not right, the API is slow when the cache is cold. Clean: The API is slow when the cache is cold."
 
         "The text is being typed into \(context.appName), \(context.appDescription), in a \(context.axRole) field."
         switch context.writingContext {
         case .chat:
-            "Match casual conversation. Keep contractions and the speaker's relaxed tone. Do not make it sound like an email."
+            "Match casual conversation. Keep contractions and the speaker's relaxed tone. Prefer a natural message over polished corporate prose."
         case .email:
-            "Use polished, complete sentences suitable for email. Keep the speaker's level of warmth and formality. Do not invent a greeting or sign-off."
+            "Use polished, complete sentences and sensible paragraphs. Keep the speaker's level of warmth and formality."
         case .development:
             "This is developer writing. Preserve technical detail and use conventional casing for technical terms, commands, identifiers, acronyms, and product names."
             "Do not turn prose into source code or add Markdown unless the speaker asks for it."
         case .document:
-            "Use clear, complete prose while preserving the speaker's tone and structure."
+            "Use clear prose, paragraphs, and lists where the spoken structure calls for them."
         case .browser, .general:
             "Match the speaker's tone. Do not make the writing more formal than the speech."
         }
@@ -207,7 +233,7 @@ actor CleanupService {
             "Past corrections from this user: \(pairs.joined(separator: "; "))."
         }
 
-        "Never shorten, summarise, or drop sentences. Every sentence spoken must appear."
+        "A repeated or replaced fragment may disappear. Every distinct intended idea must remain."
         "If you are unsure whether something is a command, it is not one. Use mode=insert."
 
         "Classify the speech before you clean it."
@@ -247,15 +273,131 @@ actor CleanupService {
             .filter { !filler.contains($0) }
     }
 
-    /// Whether the cleaned text still says what was said. Stripping filler and fixing
-    /// punctuation barely moves this; summarising fails it.
+    /// Discount adjacent repeated phrases before checking length. Natural dictation
+    /// often contains "I think, I think" or a full restarted clause; rejecting their
+    /// removal forced the cleanup model to preserve the very mess it was meant to fix.
+    static func wordsWithoutRepeatedPhrases(_ text: String) -> [String] {
+        collapseRepeatedPhrases(in: contentWords(text))
+    }
+
+    private static func collapseRepeatedPhrases(in words: [String]) -> [String] {
+        guard words.count > 1 else { return words }
+
+        var result: [String] = []
+        var index = 0
+        while index < words.count {
+            let largest = min(8, (words.count - index) / 2)
+            var repeatedLength: Int?
+            if largest > 0 {
+                for length in stride(from: largest, through: 1, by: -1) {
+                    let first = words[index..<(index + length)]
+                    let second = words[(index + length)..<(index + 2 * length)]
+                    if first.elementsEqual(second) {
+                        repeatedLength = length
+                        break
+                    }
+                }
+            }
+
+            guard let length = repeatedLength else {
+                result.append(words[index])
+                index += 1
+                continue
+            }
+
+            let phrase = Array(words[index..<(index + length)])
+            result.append(contentsOf: phrase)
+            index += length
+            while index + length <= words.count,
+                  words[index..<(index + length)].elementsEqual(phrase) {
+                index += length
+            }
+        }
+        return result
+    }
+
+    /// A direct repair replaces one fragment with another, so the safety baseline is
+    /// the larger side rather than both versions added together.
+    private static func intendedWordCount(_ raw: String) -> Int {
+        let words = contentWords(raw)
+        let repairMarkers = [
+            ["no", "that's", "not", "right"],
+            ["no", "that", "is", "not", "right"],
+            ["sorry"],
+            ["wait", "no"],
+            ["or", "rather"],
+        ]
+
+        for marker in repairMarkers {
+            guard let start = words.indices.first(where: { index in
+                index + marker.count <= words.count
+                    && words[index..<(index + marker.count)].elementsEqual(marker)
+            }) else { continue }
+
+            let before = collapseRepeatedPhrases(in: Array(words[..<start])).count
+            let afterStart = start + marker.count
+            let after = collapseRepeatedPhrases(in: Array(words[afterStart...])).count
+            if before > 0, after > 0 { return max(before, after) }
+        }
+
+        return collapseRepeatedPhrases(in: words).count
+    }
+
+    /// Whether the cleaned text is still substantial enough to represent the speech.
+    /// This catches summaries and truncation while allowing false starts to disappear.
     static func isFaithful(_ cleaned: String, to raw: String) -> Bool {
-        let spoken = contentWords(raw).count
+        let spoken = intendedWordCount(raw)
         guard spoken > 0 else { return true }
         return Double(contentWords(cleaned).count) >= Double(spoken) * 0.6
     }
 
-    private func parse(_ content: GeneratedContent, fallback: String) throws -> Decision {
+    /// Converts Devanagari to plain Latin characters. The model produces more natural
+    /// Hinglish; this deterministic pass guarantees Roman script if cleanup is off or
+    /// unavailable, and removes any Devanagari the model accidentally leaves behind.
+    static func romanizeHinglish(_ text: String) -> String {
+        guard let latin = text.applyingTransform(.toLatin, reverse: false)?
+            .applyingTransform(.stripDiacritics, reverse: false) else { return text }
+
+        // Foundation transliterates Hindi with Sanskrit-style final schwas: "कल"
+        // becomes "kala" and "करना" becomes "karana". Normalize the common forms
+        // that make fallback output sound unlike everyday Hinglish.
+        let common: [String: String] = [
+            "aja": "aaj", "apa": "aap", "aya": "aaya", "bada": "baad",
+            "bahuta": "bahut", "ghara": "ghar", "hama": "hum", "hum": "hoon",
+            "kaham": "kahan", "kala": "kal", "kama": "kaam", "kara": "kar",
+            "karana": "karna", "maim": "main", "mata": "mat", "mem": "mein",
+            "nahim": "nahi", "samajha": "samajh", "thika": "theek", "tuma": "tum",
+            "yaha": "yeh",
+        ]
+
+        var result = ""
+        var token = ""
+        func normalized(_ word: String) -> String {
+            guard var replacement = common[word.lowercased()] else { return word }
+            if word.first?.isUppercase == true {
+                replacement.replaceSubrange(
+                    replacement.startIndex...replacement.startIndex,
+                    with: replacement[replacement.startIndex].uppercased()
+                )
+            }
+            return replacement
+        }
+        for character in latin {
+            if character.isLetter {
+                token.append(character)
+            } else {
+                result += normalized(token)
+                token = ""
+                result.append(character)
+            }
+        }
+        result += normalized(token)
+        return result
+    }
+
+    private func parse(
+        _ content: GeneratedContent, fallback: String, spoken: String
+    ) throws -> Decision {
         let rawMode = (try? content.value(String.self, forProperty: "mode")) ?? "insert"
         let text = (try? content.value(String.self, forProperty: "text")) ?? fallback
         let target: String? = try? content.value(String?.self, forProperty: "target")
@@ -270,16 +412,17 @@ actor CleanupService {
         // Commands are things you say on purpose. Left to itself the model reads a
         // sentence *about* fixing something as an instruction to fix something, and the
         // text it "replaces" is whatever the field already contained.
-        if mode == .delete || mode == .replace, !Self.soundsLikeCommand(fallback) {
+        if mode == .delete || mode == .replace, !Self.soundsLikeCommand(spoken) {
             log.notice("model proposed \(rawMode, privacy: .public) with no command phrase; treating as dictation")
-            return Self.isFaithful(cleaned, to: fallback)
+            return Self.isFaithful(cleaned, to: spoken)
                 ? Decision(mode: .insert, text: cleaned, target: nil)
                 : .raw(fallback)
         }
 
-        // Cleanup tidies; it does not summarise. A transcript that comes back with most
-        // of it missing is a failed pass, and the raw text beats a truncated one.
-        if mode == .insert, !Self.isFaithful(cleaned, to: fallback) {
+        // Cleanup may collapse speech, but it may not turn a full thought into a summary.
+        // A transcript that comes back with most of its distinct content missing is a
+        // failed pass, and the raw text beats a truncated one.
+        if mode == .insert, !Self.isFaithful(cleaned, to: spoken) {
             log.notice("cleanup dropped too much of the transcript, inserting raw")
             return .raw(fallback)
         }

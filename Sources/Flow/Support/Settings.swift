@@ -46,6 +46,31 @@ enum OpenTo: String, CaseIterable, Identifiable, Sendable {
     var label: String { self == .recent ? "Most recent" : "A new note" }
 }
 
+/// The recognizer locale and script Flow should produce.
+enum TranscriptionLanguage: String, CaseIterable, Identifiable, Sendable {
+    case system, hinglish
+
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .system: "Follow system language"
+        case .hinglish: "Hinglish (Hindi + English)"
+        }
+    }
+    var detail: String {
+        switch self {
+        case .system: "Uses the macOS dictation language and keeps its normal script."
+        case .hinglish: "Listens with the Hindi model and writes Hindi in simple Roman letters while keeping English words unchanged."
+        }
+    }
+    var locale: Locale {
+        switch self {
+        case .system: .current
+        case .hinglish: Locale(identifier: "hi-IN")
+        }
+    }
+}
+
 @MainActor @Observable
 final class Settings {
     static let shared = Settings()
@@ -66,6 +91,9 @@ final class Settings {
     var panelSize: PanelSize { didSet { defaults.set(panelSize.rawValue, forKey: K.panelSize) } }
     var retention: Retention { didSet { defaults.set(retention.rawValue, forKey: K.retention) } }
     var openTo: OpenTo { didSet { defaults.set(openTo.rawValue, forKey: K.openTo) } }
+    var transcriptionLanguage: TranscriptionLanguage {
+        didSet { defaults.set(transcriptionLanguage.rawValue, forKey: K.transcriptionLanguage) }
+    }
 
     /// Cleanup is never load-bearing for insertion; this only turns off the attempt.
     var cleanupEnabled: Bool { didSet { defaults.set(cleanupEnabled, forKey: K.cleanup) } }
@@ -94,6 +122,7 @@ final class Settings {
         static let panelSize = "panelSize"
         static let retention = "retention"
         static let openTo = "openTo"
+        static let transcriptionLanguage = "transcriptionLanguage"
         static let cleanup = "cleanupEnabled"
         static let ax = "preferAXInsert"
         static let preview = "previewLines"
@@ -133,6 +162,9 @@ final class Settings {
         panelSize = PanelSize(rawValue: defaults.string(forKey: K.panelSize) ?? "") ?? .compact
         retention = Retention(rawValue: defaults.string(forKey: K.retention) ?? "") ?? .ninetyDays
         openTo = OpenTo(rawValue: defaults.string(forKey: K.openTo) ?? "") ?? .recent
+        transcriptionLanguage = TranscriptionLanguage(
+            rawValue: defaults.string(forKey: K.transcriptionLanguage) ?? ""
+        ) ?? .system
         cleanupEnabled = defaults.bool(forKey: K.cleanup)
         preferAXInsert = defaults.bool(forKey: K.ax)
         previewLines = defaults.integer(forKey: K.preview)

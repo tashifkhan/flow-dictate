@@ -12,11 +12,13 @@ enum DictationPhase: Equatable, Sendable {
     case processing
     /// Briefly, right after the text lands.
     case inserted(String)
+    /// No editable field had focus, so the text remains on the clipboard.
+    case copied(String)
     case failed(String)
 
     var isBusy: Bool {
         switch self {
-        case .idle, .failed, .inserted: false
+        case .idle, .failed, .inserted, .copied: false
         case .preparing, .recording, .processing: true
         }
     }
@@ -70,6 +72,7 @@ final class DictationController {
     /// slow one. Safe to call more than once.
     func warmUp() {
         let useCustom = Settings.shared.useCustomLanguageModel
+        let language = Settings.shared.transcriptionLanguage
         Task { [pipeline, cleanup] in
             let availability = await cleanup.availability
             await MainActor.run {
@@ -78,6 +81,7 @@ final class DictationController {
             }
             await cleanup.prewarm()
             await pipeline.setUsesCustomModel(useCustom)
+            await pipeline.setTranscriptionLanguage(language)
             do {
                 try await pipeline.prepare { fraction in
                     Task { @MainActor in
@@ -107,6 +111,28 @@ final class DictationController {
             _ = try? await pipeline.prepare()
             let label = await pipeline.kind.label
             await MainActor.run { self.transcriberLabel = label }
+        }
+    }
+
+    /// Re-resolves speech assets when the user switches between the system language
+    /// and the Hindi recognizer used for Roman-script Hinglish.
+    func transcriptionLanguageChanged() {
+        let language = Settings.shared.transcriptionLanguage
+        Task { [pipeline] in
+            await pipeline.setTranscriptionLanguage(language)
+            do {
+                _ = try await pipeline.prepare()
+                let label = await pipeline.kind.label
+                let assets = await pipeline.assetStatusLabel()
+                await MainActor.run {
+                    self.transcriberLabel = label
+                    self.assetStatusLabel = assets
+                }
+            } catch {
+                await MainActor.run {
+                    self.assetStatusLabel = error.localizedDescription
+                }
+            }
         }
     }
 
@@ -286,7 +312,8 @@ final class DictationController {
                 let decision = await self.cleanedDecision(raw: raw, app: app, cleanup: cleanup, lexicon: lexicon)
                 await MainActor.run {
                     self.onNoteText?(id, decision.text)
-                    self.finish(inserted: decision.text, raw: raw, cleaned: decision.text,
+                    self.finish(delivery: .init(text: decision.text, destination: .textField),
+                                raw: raw, cleaned: decision.text,
                                 app: app, duration: duration, library: library)
                 }
                 return
@@ -295,7 +322,7 @@ final class DictationController {
             let decision = await self.cleanedDecision(raw: raw, app: app, cleanup: cleanup, lexicon: lexicon)
 
             do {
-                let inserted = try await MainActor.run { try inserter.apply(decision, in: app) }
+                let delivery = try await MainActor.run { try inserter.apply(decision, in: app) }
 
                 // A spoken correction is the best training signal there is.
                 if decision.mode == .replace, let target = decision.target {
@@ -303,7 +330,7 @@ final class DictationController {
                 }
 
                 await MainActor.run {
-                    self.finish(inserted: inserted, raw: raw, cleaned: decision.text,
+                    self.finish(delivery: delivery, raw: raw, cleaned: decision.text,
                                 app: app, duration: duration, library: library)
                 }
             } catch {
@@ -325,6 +352,7 @@ final class DictationController {
                 axRole: app.axRole,
                 appDescription: app.appDescription,
                 writingContext: app.writingContext,
+                transcriptionLanguage: Settings.shared.transcriptionLanguage,
                 vocabulary: Array(Set(lexicon.matches(in: raw) + app.recognitionHints)).sorted(),
                 corrections: lexicon.recent.map { (said: $0.from, meant: $0.to) },
                 lastInsert: self.inserter.lastInsert
@@ -334,7 +362,7 @@ final class DictationController {
     }
 
     private func finish(
-        inserted: String, raw: String, cleaned: String,
+        delivery: Inserter.Result, raw: String, cleaned: String,
         app: FrontApp, duration: TimeInterval, library: Library
     ) {
         library.add(DictationRecord(
@@ -344,10 +372,18 @@ final class DictationController {
             appName: app.name,
             duration: duration
         ))
-        transcript = inserted
-        phase = .inserted(inserted)
+        transcript = delivery.text
+        switch delivery.destination {
+        case .textField: phase = .inserted(delivery.text)
+        case .clipboard: phase = .copied(delivery.text)
+        }
         if Settings.shared.playSounds { NSSound(named: "Tink")?.play() }
-        if Settings.shared.notifyOnInsert { Toast.inserted(inserted, into: app.name) }
+        if Settings.shared.notifyOnInsert {
+            switch delivery.destination {
+            case .textField: Toast.inserted(delivery.text, into: app.name)
+            case .clipboard: Toast.copied(delivery.text)
+            }
+        }
         dismissAfterBeat()
     }
 
@@ -369,8 +405,11 @@ final class DictationController {
     /// Re-insert a history entry at the cursor.
     func reinsert(_ text: String) {
         do {
-            try inserter.reinsert(text)
-            phase = .inserted(text)
+            let delivery = try inserter.reinsert(text)
+            switch delivery.destination {
+            case .textField: phase = .inserted(text)
+            case .clipboard: phase = .copied(text)
+            }
             dismissAfterBeat()
         } catch {
             fail(error.localizedDescription)
@@ -395,6 +434,10 @@ final class DictationController {
         Task {
             try? await Task.sleep(for: .milliseconds(700))
             if case .inserted = self.phase {
+                self.phase = .idle
+                self.transcript = ""
+                self.levels.reset()
+            } else if case .copied = self.phase {
                 self.phase = .idle
                 self.transcript = ""
                 self.levels.reset()

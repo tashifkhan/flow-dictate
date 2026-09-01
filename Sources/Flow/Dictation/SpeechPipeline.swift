@@ -46,6 +46,7 @@ actor SpeechPipeline {
     /// Resolved once, reused after that.
     private var resolvedLocale: Locale?
     private(set) var kind: TranscriberKind = .speech
+    private var transcriptionLanguage: TranscriptionLanguage = .system
 
     enum PipelineError: Error, LocalizedError {
         case noLocale
@@ -69,17 +70,19 @@ actor SpeechPipeline {
         if let resolvedLocale { return resolvedLocale }
 
         let locale: Locale
+        let requestedLocale = transcriptionLanguage.locale
         // A custom language model only attaches to DictationTranscriber, so opting in
         // means giving up the better transcriber. The setting says so.
-        if useCustomModel, CustomLanguageModel.hasTrainedModel(),
-           let supported = await DictationTranscriber.supportedLocale(equivalentTo: .current) {
+        if transcriptionLanguage == .system,
+           useCustomModel, CustomLanguageModel.hasTrainedModel(),
+           let supported = await DictationTranscriber.supportedLocale(equivalentTo: requestedLocale) {
             locale = supported
             kind = .customized
         } else if SpeechTranscriber.isAvailable,
-           let supported = await SpeechTranscriber.supportedLocale(equivalentTo: .current) {
+           let supported = await SpeechTranscriber.supportedLocale(equivalentTo: requestedLocale) {
             locale = supported
             kind = .speech
-        } else if let supported = await DictationTranscriber.supportedLocale(equivalentTo: .current) {
+        } else if let supported = await DictationTranscriber.supportedLocale(equivalentTo: requestedLocale) {
             locale = supported
             kind = .dictation
         } else {
@@ -151,6 +154,12 @@ actor SpeechPipeline {
         guard enabled != useCustomModel else { return }
         useCustomModel = enabled
         // Force locale and module re-resolution on the next dictation.
+        resolvedLocale = nil
+    }
+
+    func setTranscriptionLanguage(_ language: TranscriptionLanguage) {
+        guard language != transcriptionLanguage else { return }
+        transcriptionLanguage = language
         resolvedLocale = nil
     }
 

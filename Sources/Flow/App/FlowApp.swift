@@ -40,11 +40,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         MainActor.assumeIsolated {
             if CommandLine.arguments.contains("--self-check") { SelfCheck.run() }
+            // A development build and the installed app have the same bundle id but
+            // can still be launched from different paths. Without this guard both own
+            // the global hotkey and both insert the same dictation. The oldest process
+            // wins, so a newly launched duplicate exits before installing its event tap.
+            let currentPID = ProcessInfo.processInfo.processIdentifier
+            let runningPIDs = NSRunningApplication.runningApplications(
+                withBundleIdentifier: Bundle.main.bundleIdentifier ?? "sh.taf.flow"
+            ).map(\.processIdentifier)
+            if Self.shouldYieldToExistingInstance(currentPID: currentPID, runningPIDs: runningPIDs) {
+                NSApp.terminate(nil)
+                return
+            }
             // Accessory by default; the menu bar is the primary surface. A setting can
             // add the dock icon back for people who launch things that way.
             Settings.shared.applyActivationPolicy()
             AppEnvironment.shared.start()
         }
+    }
+
+    static func shouldYieldToExistingInstance(currentPID: pid_t, runningPIDs: [pid_t]) -> Bool {
+        guard let oldest = runningPIDs.min() else { return false }
+        return oldest != currentPID
     }
 
 

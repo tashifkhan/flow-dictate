@@ -114,6 +114,17 @@ struct SettingsView: View {
                 }
                 .onAppear { inputDevices = AudioDevices.inputs() }
 
+                Picker("Language", selection: $settings.transcriptionLanguage) {
+                    ForEach(TranscriptionLanguage.allCases) { Text($0.label).tag($0) }
+                }
+                .onChange(of: settings.transcriptionLanguage) { _, _ in
+                    env.controller.transcriptionLanguageChanged()
+                }
+
+                Text(settings.transcriptionLanguage.detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
                 if let chosen = AudioDevices.device(uid: settings.inputDeviceUID) ?? AudioDevices.systemDefaultInput,
                    chosen.isTelephonyQuality {
                     Label(

@@ -139,7 +139,7 @@ final class AppEnvironment {
     /// Start a dictation without the keyboard, for the days the hotkey feels far away.
     func toggleFromUI() {
         switch controller.phase {
-        case .idle, .failed, .inserted:
+        case .idle, .failed, .inserted, .copied:
             controller.begin()
             presenter.show()
         case .recording, .preparing:
