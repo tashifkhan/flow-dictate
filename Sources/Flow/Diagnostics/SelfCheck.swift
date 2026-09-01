@@ -1,3 +1,4 @@
+import ApplicationServices
 import Foundation
 
 /// Verification for the parts that do not need a microphone or a person.
@@ -139,8 +140,21 @@ enum SelfCheck {
             expect(CleanupService.isFaithful("I think we should ship it.",
                                              to: "um so i think we should uh ship it"),
                    "and stripping filler still counts as faithful")
-        expect(CleanupService.isFaithful("anything", to: ""),
+            expect(CleanupService.isFaithful(
+                       "I think we should ship on Friday.",
+                       to: "I think I think I think we should ship on Friday"),
+                   "collapsing a repeated phrase still counts as faithful")
+            expect(CleanupService.wordsWithoutRepeatedPhrases(
+                       "we should deploy we should deploy we should deploy today"
+                   ) == ["we", "should", "deploy", "today"],
+                   "repeated clauses count once in the cleanup guard")
+            expect(CleanupService.isFaithful(
+                       "The API is slow when the cache is cold.",
+                       to: "the API is broken no that is not right the API is slow when the cache is cold"),
+                   "an explicit correction may replace the abandoned version")
+            expect(CleanupService.isFaithful("anything", to: ""),
                    "an empty transcript has nothing to lose")
+        }
 
         // MARK: App-aware dictation
 
@@ -184,7 +198,24 @@ enum SelfCheck {
             appName: "Safari", bundleID: "com.apple.Safari", document: "https://example.com/"
         )
         expect(safari.context == .browser, "an unknown website gets neutral browser cleanup")
-        }
+        expect(FrontApp.roleAcceptsText(kAXTextFieldRole as String),
+               "a text field is recognized as an insertion target")
+        expect(FrontApp.roleAcceptsText(kAXTextAreaRole as String),
+               "a text area is recognized as an insertion target")
+        expect(!FrontApp.roleAcceptsText(kAXWindowRole as String),
+               "a focused window is not mistaken for a text field")
+        expect(!FrontApp.unknown.hasTextTarget,
+               "missing focus falls back to the clipboard")
+
+        // MARK: Single instance
+
+        section("single instance")
+        expect(!AppDelegate.shouldYieldToExistingInstance(currentPID: 100, runningPIDs: [100]),
+               "a sole Flow process keeps running")
+        expect(!AppDelegate.shouldYieldToExistingInstance(currentPID: 100, runningPIDs: [100, 200]),
+               "the oldest Flow process owns the hotkey")
+        expect(AppDelegate.shouldYieldToExistingInstance(currentPID: 200, runningPIDs: [100, 200]),
+               "a second Flow process exits before installing a hotkey")
 
         // MARK: Retraction safety
 
@@ -371,6 +402,20 @@ enum SelfCheck {
                "an unavailable reason explains itself")
         expect(CleanupAvailability.unsupportedLanguage("English (India)").detail?.contains("English (India)") == true,
                "a language mismatch names the current language")
+
+        // MARK: Hinglish
+
+        section("hinglish")
+        expect(TranscriptionLanguage.hinglish.locale.identifier
+            .replacingOccurrences(of: "_", with: "-").lowercased() == "hi-in",
+               "Hinglish selects the Hindi recognizer")
+        let roman = CleanupService.romanizeHinglish("मुझे कल deploy करना है")
+        expect(!roman.contains("म"), "Hinglish fallback removes Devanagari")
+        expect(roman.contains("deploy"), "Hinglish fallback preserves English words")
+        expect(roman == "mujhe kal deploy karna hai",
+               "Hinglish fallback removes formal Hindi schwas")
+        expect(TranscriptionLanguage.hinglish.detail.contains("Roman"),
+               "the language setting explains its output script")
 
         print("\n\(checks - failures)/\(checks) passed")
         exit(failures == 0 ? 0 : 1)

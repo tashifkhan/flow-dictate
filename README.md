@@ -129,12 +129,31 @@ custom speech model (Settings › Vocabulary).
 Voice commands ride the same round trip as ordinary dictation: "scratch that",
 "replace X with Y", "new paragraph".
 
-Flow adapts cleanup and recognition to the destination. Chat apps keep a casual tone,
+If no editable text field has focus, Flow leaves the finished text on the clipboard
+and says "Copied to clipboard" in the panel. It does not send a paste shortcut to the
+frontmost window.
+
+Only one Flow process may own the global hotkey. If the installed app is already
+running and a second copy launches from a build directory, the newer copy exits before
+it can record or insert anything.
+
+Flow cleans the whole spoken thought after recording ends. It removes filler, false
+starts, stutters, and accidental repetition; applies the speaker's latest explicit
+correction; and turns clear spoken structure into paragraphs or lists. It keeps distinct
+ideas, facts, names, numbers, examples, and constraints instead of summarizing them.
+
+Cleanup and recognition also adapt to the destination. Chat apps keep a casual tone,
 email gets complete polished sentences, and developer tools receive extra technical
-vocabulary. This also works for recognized sites inside a browser, including Gmail,
-Slack, WhatsApp, GitHub, GitLab, Google Docs, and Notion. Flow classifies the site on
-your Mac and discards the page title and URL; neither is added to dictation history or
-passed to the language model.
+vocabulary. This works for recognized sites inside a browser, including Gmail, Slack,
+WhatsApp, GitHub, GitLab, Google Docs, and Notion. Flow classifies the site on your Mac
+and discards the page title and URL; neither is added to dictation history or passed to
+the language model.
+
+Settings › General › Language also has a Hinglish mode. It listens with the Hindi
+speech model, accepts Hindi mixed with English, and writes Hindi words in simple Roman
+script instead of Devanagari. English product names and technical terms stay in English.
+If Apple Intelligence cleanup is unavailable, a local transliteration fallback still
+keeps the result in Latin characters.
 
 ## What's built
 
