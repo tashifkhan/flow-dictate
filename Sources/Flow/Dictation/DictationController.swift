@@ -176,7 +176,10 @@ final class DictationController {
 
         // Capture the target before anything else. The panel never takes focus, but
         // the answer should come from the moment you pressed the key.
-        if case .cursor = target { targetApp = FrontApp.current() }
+        switch target {
+        case .cursor: targetApp = FrontApp.current()
+        case .note: targetApp = .flowNote
+        }
 
         // Only typing into another app needs Accessibility. Dictating into a Flow note
         // never leaves the app, so it must not be gated on it.
@@ -197,7 +200,9 @@ final class DictationController {
         startedAt = .now
         phase = .preparing(nil)
 
-        let vocabulary = lexicon.words
+        // App-specific terms help the speech recognizer itself, before cleanup gets a
+        // chance to repair words such as TypeScript, GraphQL, or Kubernetes.
+        let vocabulary = Array(Set(lexicon.words + targetApp.recognitionHints)).sorted()
         // Read here, on the main actor; the pipeline runs off it.
         let inputDeviceUID = Settings.shared.inputDeviceUID
         run = Task { [pipeline, levels] in
@@ -315,10 +320,12 @@ final class DictationController {
         }
         let context = await MainActor.run {
             CleanupContext(
-                appName: app.name,
+                appName: app.destinationName,
                 bundleID: app.bundleID,
                 axRole: app.axRole,
-                vocabulary: lexicon.matches(in: raw),
+                appDescription: app.appDescription,
+                writingContext: app.writingContext,
+                vocabulary: Array(Set(lexicon.matches(in: raw) + app.recognitionHints)).sorted(),
                 corrections: lexicon.recent.map { (said: $0.from, meant: $0.to) },
                 lastInsert: self.inserter.lastInsert
             )

@@ -60,9 +60,9 @@ Flow is an accessory app. It lives in the menu bar with no dock icon.
 scripts/check.sh
 ```
 
-94 checks covering the SQLite store, retention, search, record derivation, statistics,
-daily aggregates, hotkey encoding, lexicon matching, custom-model handling, and
-availability copy. Exits non-zero on failure.
+Checks covering the SQLite store, retention, search, record derivation, statistics,
+daily aggregates, hotkey encoding, lexicon matching, app-aware dictation,
+custom-model handling, and availability copy. Exits non-zero on failure.
 
 ## Where the app is
 
@@ -128,6 +128,13 @@ custom speech model (Settings › Vocabulary).
 
 Voice commands ride the same round trip as ordinary dictation: "scratch that",
 "replace X with Y", "new paragraph".
+
+Flow adapts cleanup and recognition to the destination. Chat apps keep a casual tone,
+email gets complete polished sentences, and developer tools receive extra technical
+vocabulary. This also works for recognized sites inside a browser, including Gmail,
+Slack, WhatsApp, GitHub, GitLab, Google Docs, and Notion. Flow classifies the site on
+your Mac and discards the page title and URL; neither is added to dictation history or
+passed to the language model.
 
 ## What's built
 

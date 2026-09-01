@@ -26,6 +26,8 @@ struct CleanupContext: Sendable {
     var appName: String
     var bundleID: String
     var axRole: String
+    var appDescription: String
+    var writingContext: WritingContext
     var vocabulary: [String] = []
     var corrections: [(said: String, meant: String)] = []
     /// The last thing Flow typed, so "scratch that" has a referent.
@@ -176,9 +178,19 @@ actor CleanupService {
         "Fix punctuation, casing, and obvious misheard words."
         "Do not add greetings, sign-offs, or commentary."
 
-        "The text is being typed into \(context.appName), a \(context.axRole) field."
-        if context.bundleID.contains("slack") || context.bundleID.contains("Messages") {
-            "This is a chat app. Keep it casual and short. Do not formalise it."
+        "The text is being typed into \(context.appName), \(context.appDescription), in a \(context.axRole) field."
+        switch context.writingContext {
+        case .chat:
+            "Match casual conversation. Keep contractions and the speaker's relaxed tone. Do not make it sound like an email."
+        case .email:
+            "Use polished, complete sentences suitable for email. Keep the speaker's level of warmth and formality. Do not invent a greeting or sign-off."
+        case .development:
+            "This is developer writing. Preserve technical detail and use conventional casing for technical terms, commands, identifiers, acronyms, and product names."
+            "Do not turn prose into source code or add Markdown unless the speaker asks for it."
+        case .document:
+            "Use clear, complete prose while preserving the speaker's tone and structure."
+        case .browser, .general:
+            "Match the speaker's tone. Do not make the writing more formal than the speech."
         }
 
         if let last = context.lastInsert, !last.isEmpty {
@@ -186,7 +198,7 @@ actor CleanupService {
         }
 
         if !context.vocabulary.isEmpty {
-            "These are correctly spelled proper nouns the speaker uses: \(context.vocabulary.joined(separator: ", "))."
+            "These are correctly spelled names or terms relevant here: \(context.vocabulary.joined(separator: ", "))."
             "If the transcript has a near miss of one of them, use the correct spelling."
         }
 

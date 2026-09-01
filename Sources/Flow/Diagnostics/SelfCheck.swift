@@ -139,8 +139,48 @@ enum SelfCheck {
             expect(CleanupService.isFaithful("I think we should ship it.",
                                              to: "um so i think we should uh ship it"),
                    "and stripping filler still counts as faithful")
-            expect(CleanupService.isFaithful("anything", to: ""),
+        expect(CleanupService.isFaithful("anything", to: ""),
                    "an empty transcript has nothing to lose")
+
+        // MARK: App-aware dictation
+
+        section("app context")
+        let gmail = FrontApp.inferContext(
+            appName: "Google Chrome", bundleID: "com.google.Chrome",
+            document: "https://mail.google.com/mail/u/0/#inbox"
+        )
+        expect(gmail.context == .email, "Gmail in a browser gets email cleanup")
+        expect(gmail.destinationName == "Gmail", "a known web destination replaces the browser name")
+
+        let whatsapp = FrontApp.inferContext(
+            appName: "Safari", bundleID: "com.apple.Safari",
+            document: "https://web.whatsapp.com/"
+        )
+        expect(whatsapp.context == .chat, "WhatsApp Web stays conversational")
+
+        let github = FrontApp.inferContext(
+            appName: "Firefox", bundleID: "org.mozilla.firefox",
+            windowTitle: "Pull requests · owner/repository · GitHub"
+        )
+        expect(github.context == .development, "GitHub in a browser gets developer context")
+
+        let xcode = FrontApp.inferContext(appName: "Xcode", bundleID: "com.apple.dt.Xcode")
+        expect(xcode.context == .development, "Xcode gets developer context")
+        expect(xcode.context.recognitionHints.contains("TypeScript"),
+               "developer context supplies technical recognition hints")
+
+        let slack = FrontApp.inferContext(
+            appName: "Slack", bundleID: "com.tinyspeck.slackmacgap"
+        )
+        expect(slack.context == .chat, "native Slack stays conversational")
+
+        let mail = FrontApp.inferContext(appName: "Mail", bundleID: "com.apple.mail")
+        expect(mail.context == .email, "native Mail gets email cleanup")
+
+        let safari = FrontApp.inferContext(
+            appName: "Safari", bundleID: "com.apple.Safari", document: "https://example.com/"
+        )
+        expect(safari.context == .browser, "an unknown website gets neutral browser cleanup")
         }
 
         // MARK: Retraction safety
