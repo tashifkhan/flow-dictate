@@ -214,7 +214,7 @@ final class Inserter {
 }
 
 /// A best-effort copy of the pasteboard, across every type it was carrying.
-private struct ClipboardSnapshot: Sendable {
+struct ClipboardSnapshot: Sendable {
     private let items: [[String: Data]]
 
     init(_ pasteboard: NSPasteboard) {

@@ -1,3 +1,4 @@
+import AppKit
 import ApplicationServices
 import Carbon.HIToolbox
 import Foundation
@@ -9,6 +10,80 @@ import Foundation
 /// build this project. Run it with `Flow --self-check`; it exits non-zero on failure,
 /// so CI can use it as-is.
 enum SelfCheck {
+    /// Opt-in integration check in a disposable local text view, never a chat composer.
+    /// Launch with `open -n Flow.app --args --check-insertion /tmp/result.json`.
+    @MainActor
+    static func checkInsertion(output: String) async {
+        let previousApp = NSWorkspace.shared.frontmostApplication
+        let window = NSWindow(contentRect: NSRect(x: 200, y: 200, width: 500, height: 180),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.title = "Flow insertion check"
+        window.isReleasedWhenClosed = false
+        let view = NSTextView(frame: window.contentView!.bounds)
+        view.isRichText = false
+        window.contentView = view
+        // This window is outside SwiftUI's scene hierarchy, so give it a standard
+        // responder-chain Paste menu item for Command-V.
+        let menu = NSMenu()
+        let edit = NSMenuItem(title: "Edit", action: nil, keyEquivalent: "")
+        edit.submenu = NSMenu(title: "Edit")
+        edit.submenu?.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        menu.addItem(edit)
+        NSApp.mainMenu = menu
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeFirstResponder(view)
+        let monitor = HotkeyMonitor()
+        var report: [String: Any] = ["accessibility": Permissions.hasAccessibility]
+        do {
+            try monitor.start()
+            try await Task.sleep(for: .milliseconds(300))
+            NSApp.mainMenu = menu
+            window.makeKeyAndOrderFront(nil)
+            window.makeFirstResponder(view)
+            report["focusedPID"] = NSWorkspace.shared.frontmostApplication?.processIdentifier
+            report["checkPID"] = ProcessInfo.processInfo.processIdentifier
+            let target = FrontApp.current()
+            report["targetBundleID"] = target.bundleID
+            report["role"] = target.axRole
+            report["hasTextTarget"] = target.hasTextTarget
+            // Force the paste path while retaining the actual focus classification.
+            var pasteTarget = target
+            pasteTarget.isElectron = true
+            guard target.bundleID == Bundle.main.bundleIdentifier, target.hasTextTarget else {
+                throw Inserter.InsertError.empty
+            }
+            let expected = "Flow insertion check"
+            let result = try Inserter().apply(.raw(expected), in: pasteTarget)
+            try await Task.sleep(for: .seconds(1))
+            report["insertedLength"] = view.string.count
+            let inserted = view.string == expected
+            report["insertedInTextField"] = inserted
+            report["destination"] = String(describing: result.destination)
+            let snapshot = ClipboardSnapshot(NSPasteboard.general)
+            defer { snapshot.restore(to: NSPasteboard.general) }
+            let copied = try Inserter().apply(.raw("Flow clipboard check"), in: .unknown)
+            let clipboardOK: Bool
+            if case .clipboard = copied.destination {
+                clipboardOK = NSPasteboard.general.string(forType: .string) == "Flow clipboard check"
+            } else {
+                clipboardOK = false
+            }
+            report["copiedWithoutTextField"] = clipboardOK
+            report["passed"] = inserted && clipboardOK
+        } catch {
+            report["passed"] = false
+            report["error"] = error.localizedDescription
+        }
+        monitor.stop()
+        window.close()
+        previousApp?.activate()
+        if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: URL(fileURLWithPath: output), options: .atomic)
+        }
+        NSApp.terminate(nil)
+    }
+
     @MainActor
     static func run() -> Never {
         var failures = 0

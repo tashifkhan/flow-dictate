@@ -40,6 +40,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         MainActor.assumeIsolated {
             if CommandLine.arguments.contains("--self-check") { SelfCheck.run() }
+            if let index = CommandLine.arguments.firstIndex(of: "--check-insertion"),
+               CommandLine.arguments.indices.contains(index + 1) {
+                let output = CommandLine.arguments[index + 1]
+                Task { await SelfCheck.checkInsertion(output: output) }
+                return
+            }
             // A development build and the installed app have the same bundle id but
             // can still be launched from different paths. Without this guard both own
             // the global hotkey and both insert the same dictation. The oldest process
