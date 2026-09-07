@@ -135,7 +135,7 @@ final class Inserter {
     // MARK: - Paths
 
     private func insert(_ text: String, in app: FrontApp) throws {
-        if Settings.shared.preferAXInsert, !app.isElectron, setViaAccessibility(text) {
+        if Settings.shared.preferAXInsert, !app.prefersClipboardPaste, setViaAccessibility(text) {
             return
         }
         try paste(text)
