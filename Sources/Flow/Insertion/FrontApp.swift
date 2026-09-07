@@ -76,6 +76,13 @@ struct FrontApp: Sendable {
     /// answers "success" to an Accessibility write and then does nothing with it.
     var isElectron: Bool = false
 
+    /// Zed's custom editor needs clipboard paste when AX cannot expose its cursor.
+    var prefersClipboardPaste: Bool { isElectron || Self.isZed(bundleID) }
+
+    static func isZed(_ bundleID: String) -> Bool {
+        ["dev.zed.Zed", "dev.zed.Zed-Preview", "dev.zed.Zed-Nightly"].contains(bundleID)
+    }
+
     /// The frameworks that mark a Chromium-backed app. Asking the bundle is the whole
     /// test — there is no list of app names to keep up to date, and an app Flow has
     /// never heard of is handled the same as one it has.

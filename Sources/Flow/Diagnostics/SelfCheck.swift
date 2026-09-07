@@ -208,6 +208,10 @@ enum SelfCheck {
         expect(!FrontApp.unknown.hasTextTarget,
                "missing focus falls back to the clipboard")
 
+        var zedTarget = FrontApp.unknown
+        zedTarget.bundleID = "dev.zed.Zed"
+        expect(zedTarget.prefersClipboardPaste, "Zed bypasses direct AX insertion")
+
         section("shortcut isolation")
         let monitor = HotkeyMonitor()
         monitor.dispatchAction = { $0() }
