@@ -1,4 +1,5 @@
 import ApplicationServices
+import Carbon.HIToolbox
 import Foundation
 
 /// Verification for the parts that do not need a microphone or a person.
@@ -206,6 +207,86 @@ enum SelfCheck {
                "a focused window is not mistaken for a text field")
         expect(!FrontApp.unknown.hasTextTarget,
                "missing focus falls back to the clipboard")
+
+        section("shortcut isolation")
+        let monitor = HotkeyMonitor()
+        monitor.dispatchAction = { $0() }
+        var dictating = true
+        var stops = 0
+        var cancels = 0
+        monitor.isDictating = { dictating }
+        monitor.onStop = { stops += 1; dictating = false }
+        monitor.onCancel = { cancels += 1; dictating = false }
+        func route(_ code: Int, down: Bool, flags: CGEventFlags = [], repeatKey: Bool = false,
+                   hotkey: Hotkey = .fn) -> Bool {
+            guard let event = CGEvent(keyboardEventSource: nil,
+                                      virtualKey: CGKeyCode(code), keyDown: down) else { return false }
+            event.flags = flags
+            event.setIntegerValueField(.keyboardEventAutorepeat, value: repeatKey ? 1 : 0)
+            return monitor.handle(type: down ? .keyDown : .keyUp, event: event, hotkey: hotkey)
+        }
+        for code in [kVK_Return, kVK_ANSI_KeypadEnter] {
+            let flags: CGEventFlags = .maskCommand
+            dictating = true
+            let previousStops = stops
+            expect(route(code, down: true, flags: flags), "stop shortcut cannot reach the chat app")
+            expect(stops == previousStops + 1, "stop shortcut ends dictation once")
+            expect(route(code, down: true, flags: flags, repeatKey: true),
+                   "stop autorepeat stays consumed after recording ends")
+            expect(stops == previousStops + 1, "autorepeat does not stop twice")
+            expect(route(code, down: false), "stop release is consumed after modifiers lift")
+            expect(!route(code, down: true, flags: flags), "idle submit shortcuts reach the app")
+            expect(!route(code, down: false), "idle submit releases reach the app")
+        }
+        for code in [kVK_Return, kVK_ANSI_KeypadEnter] {
+            dictating = true
+            let previousStops = stops
+            expect(!route(code, down: true, flags: .maskControl),
+                   "Control Enter reaches the app while dictating")
+            expect(stops == previousStops && dictating,
+                   "Control Enter does not stop dictation")
+            expect(!route(code, down: false, flags: .maskControl),
+                   "Control Enter release reaches the app")
+        }
+        dictating = true
+        expect(!route(kVK_Return, down: true), "plain Return still reaches the app")
+        expect(route(kVK_Escape, down: true), "cancel does not also dismiss the app's composer")
+        expect(cancels == 1, "Escape cancels dictation once")
+        expect(route(kVK_Escape, down: false), "cancel release stays consumed")
+        expect(!route(kVK_Escape, down: true), "idle Escape reaches the app")
+        let controlReturn = Hotkey.combo(keyCode: kVK_Return, flags: .maskControl)
+        expect(route(kVK_Return, down: true, flags: .maskControl, hotkey: controlReturn),
+               "a configured Control Return hotkey is consumed even when idle")
+        expect(route(kVK_Return, down: false, hotkey: controlReturn),
+               "configured hotkey release stays consumed without modifiers")
+
+        let deferredMonitor = HotkeyMonitor()
+        var pendingActions: [@MainActor () -> Void] = []
+        var didStop = false
+        deferredMonitor.dispatchAction = { pendingActions.append($0) }
+        deferredMonitor.isDictating = { true }
+        deferredMonitor.onStop = { didStop = true }
+        if let event = CGEvent(keyboardEventSource: nil,
+                               virtualKey: CGKeyCode(kVK_Return), keyDown: true) {
+            event.flags = .maskCommand
+            expect(deferredMonitor.handle(type: .keyDown, event: event),
+                   "stop is consumed before deferred work runs")
+            expect(!didStop && pendingActions.count == 1,
+                   "dictation work does not run inside the event callback")
+            pendingActions.removeFirst()()
+            expect(didStop, "queued stop runs after the callback")
+            event.setIntegerValueField(.eventSourceUserData, value: Inserter.eventMarker)
+            expect(!deferredMonitor.handle(type: .keyDown, event: event),
+                   "Flow-generated events bypass even a consumed key")
+        }
+        if let paste = CGEvent(keyboardEventSource: nil,
+                               virtualKey: CGKeyCode(kVK_ANSI_V), keyDown: true) {
+            paste.flags = .maskCommand
+            paste.setIntegerValueField(.eventSourceUserData, value: Inserter.eventMarker)
+            expect(!monitor.handle(type: .keyDown, event: paste,
+                                   hotkey: .combo(keyCode: kVK_ANSI_V, flags: .maskCommand)),
+                   "synthetic paste cannot trigger or be swallowed by a matching hotkey")
+        }
 
         // MARK: Single instance
 

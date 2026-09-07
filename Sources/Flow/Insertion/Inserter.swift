@@ -11,6 +11,8 @@ import OSLog
 /// cursor the text stays on the clipboard for the user.
 @MainActor
 final class Inserter {
+    static let eventMarker: Int64 = 0x464C4F57
+
     private let log = Logger(subsystem: "sh.taf.flow", category: "insert")
 
     /// What Flow last typed, so "scratch that" has something to scratch.
@@ -201,6 +203,8 @@ final class Inserter {
 
         let down = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: true)
         let up = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: false)
+        down?.setIntegerValueField(.eventSourceUserData, value: Self.eventMarker)
+        up?.setIntegerValueField(.eventSourceUserData, value: Self.eventMarker)
         down?.flags = flags
         up?.flags = flags
         down?.post(tap: .cghidEventTap)
