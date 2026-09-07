@@ -118,6 +118,8 @@ granting it, quit and relaunch Flow.** Event taps are only installed at startup.
   rebinds it. Pick a preset, or click the field and press any modifier (fn, right ⌥,
   right ⌃…) or any key with at least one modifier (⌃⌥Space). A bare letter is refused.
   It is a global watcher and would fire while you type.
+- **⌘Enter** while recording stops and inserts. Flow consumes the shortcut
+  so the foreground app cannot also send the message.
 - **Escape** while recording cancels without inserting
 - **⇧⌘V** re-inserts the selected history entry at the cursor
 - **⇧⌘N** new note, **⇧⌘D** start a dictation, both in-app
@@ -131,7 +133,8 @@ Voice commands ride the same round trip as ordinary dictation: "scratch that",
 
 If no editable text field has focus, Flow leaves the finished text on the clipboard
 and says "Copied to clipboard" in the panel. It does not send a paste shortcut to the
-frontmost window.
+frontmost window. Zed uses paste instead of direct Accessibility text writes when
+an editable field is detected.
 
 Only one Flow process may own the global hotkey. If the installed app is already
 running and a second copy launches from a build directory, the newer copy exits before
