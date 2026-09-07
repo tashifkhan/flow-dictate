@@ -322,7 +322,12 @@ final class DictationController {
             let decision = await self.cleanedDecision(raw: raw, app: app, cleanup: cleanup, lexicon: lexicon)
 
             do {
-                let delivery = try await MainActor.run { try inserter.apply(decision, in: app) }
+                let (delivery, insertionApp) = try await MainActor.run {
+                    // Focus may have changed during recognition or cleanup. Decide
+                    // whether to insert or copy using the field active now.
+                    let current = FrontApp.current()
+                    return (try inserter.apply(decision, in: current), current)
+                }
 
                 // A spoken correction is the best training signal there is.
                 if decision.mode == .replace, let target = decision.target {
@@ -331,7 +336,7 @@ final class DictationController {
 
                 await MainActor.run {
                     self.finish(delivery: delivery, raw: raw, cleaned: decision.text,
-                                app: app, duration: duration, library: library)
+                                app: insertionApp, duration: duration, library: library)
                 }
             } catch {
                 self.fail(error.localizedDescription)
