@@ -191,15 +191,29 @@ private struct MenuBarRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(item.inserted)
-                    .font(.callout)
-                    .lineLimit(2)
-                Text("\(item.appName) · \(item.createdAt.formatted(date: .omitted, time: .shortened))")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+            Button(action: insert) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(item.inserted)
+                        .font(.callout)
+                        .lineLimit(2)
+                    Text("\(item.appName) · \(item.createdAt.formatted(date: .omitted, time: .shortened))")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(.rect)
             }
-            Spacer(minLength: 4)
+            .buttonStyle(.plain)
+            .help("Insert at cursor")
+            Button(action: copy) {
+                Image(systemName: "doc.on.doc")
+                    .frame(width: 24, height: 28)
+                    .contentShape(.rect)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .help("Copy to clipboard")
+            .accessibilityLabel("Copy dictation to clipboard")
             if item.pinned || hovering {
                 Button(action: pin) {
                     Image(systemName: item.pinned ? "pin.fill" : "pin")
@@ -213,7 +227,15 @@ private struct MenuBarRow: View {
         .contentShape(.rect)
         .background(hovering ? AnyShapeStyle(.selection.opacity(0.5)) : AnyShapeStyle(.clear))
         .onHover { hovering = $0 }
-        .onTapGesture(perform: insert)
-        .help("Insert at cursor")
+        .contextMenu {
+            Button("Copy", action: copy)
+            Button("Insert at Cursor", action: insert)
+            Button(item.pinned ? "Unpin" : "Pin", action: pin)
+        }
+    }
+
+    private func copy() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(item.inserted, forType: .string)
     }
 }
