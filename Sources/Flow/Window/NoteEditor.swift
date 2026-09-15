@@ -92,8 +92,7 @@ struct NoteEditor: View {
         } label: {
             ZStack {
                 if env.controller.phase == .recording {
-                    Waveform(levels: env.controller.levels.bars, isLive: true, tint: .white)
-                        .frame(width: 40, height: 18)
+                    Waveform(levels: env.controller.levels.bars, tint: .white, height: 18)
                 } else {
                     Image(systemName: "mic.fill").font(.system(size: 16))
                 }
