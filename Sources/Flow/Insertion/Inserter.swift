@@ -28,8 +28,12 @@ final class Inserter {
         case secureField
         case noAccessibility
         case empty
+        case clipboardUnavailable
+        case clipboardChanged
         var errorDescription: String? {
             switch self {
+            case .clipboardUnavailable: "The clipboard could not take the dictation, so nothing was pasted."
+            case .clipboardChanged: "You copied something while Flow was pasting. Your copy was kept and nothing was pasted."
             case .secureField: "Flow won't type into a password field."
             case .noAccessibility: "Flow needs Accessibility access to type. Grant it in System Settings › Privacy & Security › Accessibility."
             case .empty: "Nothing was said."
@@ -132,21 +136,96 @@ final class Inserter {
 
     func forgetLastInsert() { lastInsert = nil }
 
+    // MARK: - Confirmation
+
+    /// Where the caret was before an insert. Only positions, never the field's text.
+    struct CaretSnapshot: @unchecked Sendable {
+        let element: AXUIElement
+        let location: Int
+        let length: Int
+        let characters: Int?
+    }
+
+    /// Nil when the field exposes no caret metadata. Electron and Zed are skipped: they
+    /// report stale ranges often enough that a check would cry wolf.
+    func caretSnapshot(for app: FrontApp) -> CaretSnapshot? {
+        let pid = app.processID > 0 ? app.processID : NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0
+        guard app.hasTextTarget, !app.prefersClipboardPaste, pid > 0,
+              let element = FrontApp.focusedElement(pid: pid),
+              let range = Self.selectedRange(element) else { return nil }
+        return CaretSnapshot(element: element, location: range.location, length: range.length,
+                             characters: Self.characterCount(element))
+    }
+
+    /// Watches for up to 700 ms for the caret or the character count to move. Metadata
+    /// that stops being readable counts as delivered: that is no evidence either way.
+    func confirmInsertion(since before: CaretSnapshot) async -> Bool {
+        for attempt in 0..<8 {
+            if attempt > 0 { try? await Task.sleep(for: .milliseconds(100)) }
+            guard let range = Self.selectedRange(before.element) else { return true }
+            if range.location != before.location || range.length != before.length
+                || Self.characterCount(before.element) != before.characters {
+                return true
+            }
+        }
+        return false
+    }
+
+    /// A backup for an insert Flow could not confirm. Runs after the paste path has
+    /// already put the user's clipboard back.
+    func keepOnClipboard(_ text: String) {
+        guard !text.isEmpty else { return }
+        copy(text)
+    }
+
+    /// A ⌘V sent while Option or Shift is still down arrives as ⌥⌘V or ⇧⌘V, which many
+    /// editors bind to something else. Gives the hotkey up to 600 ms to come up, then
+    /// carries on: the menu paste path does not care about held keys.
+    func waitForModifierRelease() async {
+        for _ in 0..<12 {
+            guard Self.modifiersAreHeld else { return }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+    }
+
+    static var modifiersAreHeld: Bool {
+        let modifiers: CGEventFlags = [.maskShift, .maskControl, .maskAlternate, .maskCommand, .maskSecondaryFn]
+        return !CGEventSource.flagsState(.hidSystemState).intersection(modifiers).isEmpty
+    }
+
+    private static func selectedRange(_ element: AXUIElement) -> CFRange? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, &value) == .success,
+              let value, CFGetTypeID(value) == AXValueGetTypeID() else { return nil }
+        var range = CFRange()
+        // The type ID check above makes this cast safe.
+        guard AXValueGetValue(value as! AXValue, .cfRange, &range) else { return nil }
+        return range
+    }
+
+    private static func characterCount(_ element: AXUIElement) -> Int? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXNumberOfCharactersAttribute as CFString, &value) == .success
+        else { return nil }
+        return value as? Int
+    }
+
     // MARK: - Paths
 
     private func insert(_ text: String, in app: FrontApp) throws {
-        if Settings.shared.preferAXInsert, !app.prefersClipboardPaste, setViaAccessibility(text) {
+        // Web pages only see a real paste; a direct write skips their input handlers.
+        if Settings.shared.preferAXInsert, !app.prefersClipboardPaste, !app.isWebContent,
+           setViaAccessibility(text, pid: app.processID) {
             return
         }
-        try paste(text)
+        try paste(text, into: app.processID)
     }
 
     /// The clean path. Works in Notes, Xcode, and most native apps; silently fails
     /// everywhere else, which is why it reports success as a Bool.
-    private func setViaAccessibility(_ text: String) -> Bool {
-        guard let app = NSWorkspace.shared.frontmostApplication,
-              let element = FrontApp.focusedElement(pid: app.processIdentifier)
-        else { return false }
+    private func setViaAccessibility(_ text: String, pid: pid_t) -> Bool {
+        let owner = pid > 0 ? pid : NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0
+        guard owner > 0, let element = FrontApp.focusedElement(pid: owner) else { return false }
 
         let result = AXUIElementSetAttributeValue(
             element, kAXSelectedTextAttribute as CFString, text as CFString
@@ -162,27 +241,53 @@ final class Inserter {
         return true
     }
 
+    /// An intentional copy the user keeps. Local to this Mac: a dictation should not
+    /// ride Universal Clipboard to a phone.
     private func copy(_ text: String) {
         let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
+        pasteboard.prepareForNewContents(with: .currentHostOnly)
         pasteboard.setString(text, forType: .string)
     }
 
-    /// Save clipboard, paste, restore. The restore window is a few hundred ms; if you
-    /// copy something in exactly that window you lose it. Acceptable, ship it.
-    private func paste(_ text: String) throws {
+    /// Save clipboard, paste, restore.
+    ///
+    /// The app's own Edit › Paste goes first when exactly one plain ⌘V item exists: it
+    /// works on every keyboard layout and ignores modifiers still held down. The
+    /// synthetic keystroke is the fallback, and only when the menu press was never sent.
+    /// The old clipboard comes back only if nothing else was copied in the meantime.
+    private func paste(_ text: String, into pid: pid_t) throws {
         let pasteboard = NSPasteboard.general
         let snapshot = ClipboardSnapshot(pasteboard)
+        guard let owned = Self.stageTransient(text, on: pasteboard) else { throw InsertError.clipboardUnavailable }
 
-        pasteboard.clearContents()
-        pasteboard.setString(text, forType: .string)
-
-        try synthesize(keyCode: CGKeyCode(kVK_ANSI_V), flags: .maskCommand)
+        // Pressing our own menu over AX from the main thread would wait on itself.
+        let menuPaste = pid > 0 && pid != ProcessInfo.processInfo.processIdentifier
+            ? NativePasteCommand.find(for: pid)?.invoke { pasteboard.changeCount == owned }
+            : nil
+        switch menuPaste {
+        case .dispatched?:
+            log.debug("pasted through the app's Paste menu command")
+        case .blocked? where pasteboard.changeCount != owned:
+            throw InsertError.clipboardChanged
+        case .blocked?, .unavailable?, nil:
+            try synthesize(keyCode: CGKeyCode(kVK_ANSI_V), flags: .maskCommand)
+        }
 
         Task { [snapshot] in
             try? await Task.sleep(for: Self.clipboardRestoreDelay)
-            snapshot.restore(to: NSPasteboard.general)
+            snapshot.restore(to: NSPasteboard.general, onlyIfUnchangedSince: owned)
         }
+    }
+
+    /// Writes the dictation as a transient, this-Mac-only item and returns the pasteboard
+    /// revision Flow owns. Clipboard managers skip transient items.
+    private static func stageTransient(_ text: String, on pasteboard: NSPasteboard) -> Int? {
+        let item = NSPasteboardItem()
+        guard item.setString(text, forType: .string) else { return nil }
+        item.setData(Data(), forType: NSPasteboard.PasteboardType("org.nspasteboard.TransientType"))
+        let owned = pasteboard.prepareForNewContents(with: .currentHostOnly)
+        guard pasteboard.writeObjects([item]), pasteboard.changeCount == owned else { return nil }
+        return owned
     }
 
     private func backspace(count: Int) throws {
@@ -225,6 +330,14 @@ struct ClipboardSnapshot: Sendable {
             }
             return payload
         }
+    }
+
+    /// Restores only while the pasteboard is still at `expectedCount`, Flow's own write.
+    /// Anything the user copied during the paste wins.
+    @MainActor
+    func restore(to pasteboard: NSPasteboard, onlyIfUnchangedSince expectedCount: Int) {
+        guard pasteboard.changeCount == expectedCount else { return }
+        restore(to: pasteboard)
     }
 
     @MainActor

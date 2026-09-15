@@ -46,6 +46,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 Task { await SelfCheck.checkInsertion(output: output) }
                 return
             }
+            if let index = CommandLine.arguments.firstIndex(of: "--probe-focus"),
+               CommandLine.arguments.indices.contains(index + 2) {
+                let bundleID = CommandLine.arguments[index + 1]
+                let output = CommandLine.arguments[index + 2]
+                Task { await SelfCheck.probeFocus(bundleID: bundleID, output: output) }
+                return
+            }
             // A development build and the installed app have the same bundle id but
             // can still be launched from different paths. Without this guard both own
             // the global hotkey and both insert the same dictation. The oldest process

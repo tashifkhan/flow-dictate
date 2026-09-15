@@ -84,6 +84,121 @@ enum SelfCheck {
         NSApp.terminate(nil)
     }
 
+    /// Reports what Accessibility says about another app's focused field, the same reads
+    /// `FrontApp.current()` uses to choose between inserting and copying.
+    /// Launch with `open -n Flow.app --args --probe-focus dev.zed.Zed /tmp/focus.json`.
+    @MainActor
+    static func probeFocus(bundleID: String, output: String) async {
+        var report: [String: Any] = ["trusted": AXIsProcessTrusted(), "bundleID": bundleID]
+        defer {
+            if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {
+                try? data.write(to: URL(fileURLWithPath: output), options: .atomic)
+            }
+            NSApp.terminate(nil)
+        }
+        guard let target = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first else {
+            report["error"] = "not running"
+            return
+        }
+        target.activate()
+        try? await Task.sleep(for: .seconds(1.5))
+        report["frontmost"] = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? ""
+
+        let app = AXUIElementCreateApplication(target.processIdentifier)
+        func describe(_ label: String) {
+            var focused: CFTypeRef?
+            let status = AXUIElementCopyAttributeValue(app, kAXFocusedUIElementAttribute as CFString, &focused)
+            var entry: [String: Any] = ["focusedStatus": Int(status.rawValue)]
+            if status == .success, let focused, CFGetTypeID(focused) == AXUIElementGetTypeID() {
+                let element = unsafeDowncast(focused, to: AXUIElement.self)
+                var names: CFArray?
+                AXUIElementCopyAttributeNames(element, &names)
+                entry["attributes"] = (names as? [String]) ?? []
+                entry["role"] = FrontApp.string(element, kAXRoleAttribute) ?? ""
+                entry["subrole"] = FrontApp.string(element, kAXSubroleAttribute) ?? ""
+                var settable = DarwinBoolean(false)
+                let settableStatus = AXUIElementIsAttributeSettable(element, kAXSelectedTextAttribute as CFString, &settable)
+                entry["selectedTextSettable"] = settableStatus == .success && settable.boolValue
+                var range: CFTypeRef?
+                entry["selectedRangeStatus"] = Int(AXUIElementCopyAttributeValue(
+                    element, kAXSelectedTextRangeAttribute as CFString, &range).rawValue)
+            }
+            var windowValue: CFTypeRef?
+            entry["focusedWindowStatus"] = Int(AXUIElementCopyAttributeValue(
+                app, kAXFocusedWindowAttribute as CFString, &windowValue).rawValue)
+            let front = FrontApp.current()
+            entry["flowRole"] = front.axRole
+            entry["flowHasTextTarget"] = front.hasTextTarget
+            entry["flowPrefersPaste"] = front.prefersClipboardPaste
+            report[label] = entry
+        }
+        /// The system-wide element sometimes answers when the app element does not.
+        func systemWide(_ label: String) {
+            var focused: CFTypeRef?
+            let status = AXUIElementCopyAttributeValue(
+                AXUIElementCreateSystemWide(), kAXFocusedUIElementAttribute as CFString, &focused)
+            var entry: [String: Any] = ["status": Int(status.rawValue)]
+            if status == .success, let focused, CFGetTypeID(focused) == AXUIElementGetTypeID() {
+                let element = unsafeDowncast(focused, to: AXUIElement.self)
+                entry["role"] = FrontApp.string(element, kAXRoleAttribute) ?? ""
+                var pid: pid_t = 0
+                AXUIElementGetPid(element, &pid)
+                entry["ownedByTarget"] = pid == target.processIdentifier
+            }
+            report[label] = entry
+        }
+        /// Walks the focused window for an element that says it has focus, in case the
+        /// app never publishes AXFocusedUIElement.
+        func focusedDescendant(_ label: String) {
+            var windowValue: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(app, kAXFocusedWindowAttribute as CFString, &windowValue) == .success,
+                  let windowValue, CFGetTypeID(windowValue) == AXUIElementGetTypeID() else { return }
+            var queue = [unsafeDowncast(windowValue, to: AXUIElement.self)]
+            var visited = 0
+            var found: [[String: Any]] = []
+            var roles: [String: Int] = [:]
+            while !queue.isEmpty, visited < 4000 {
+                let element = queue.removeFirst()
+                visited += 1
+                let role = FrontApp.string(element, kAXRoleAttribute) ?? "?"
+                roles[role, default: 0] += 1
+                var focusedValue: CFTypeRef?
+                if AXUIElementCopyAttributeValue(element, kAXFocusedAttribute as CFString, &focusedValue) == .success,
+                   (focusedValue as? Bool) == true {
+                    var settable = DarwinBoolean(false)
+                    AXUIElementIsAttributeSettable(element, kAXSelectedTextAttribute as CFString, &settable)
+                    var editable: CFTypeRef?
+                    AXUIElementCopyAttributeValue(element, kAXIsEditableAttribute as CFString, &editable)
+                    found.append(["role": role, "subrole": FrontApp.string(element, kAXSubroleAttribute) ?? "",
+                                  "selectedTextSettable": settable.boolValue, "editable": (editable as? Bool) ?? false])
+                }
+                var children: CFTypeRef?
+                if AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &children) == .success,
+                   let list = children as? [AXUIElement] {
+                    queue.append(contentsOf: list)
+                }
+            }
+            report[label] = ["visited": visited, "focusedElements": found, "roles": roles]
+        }
+
+        // Discovery only: whether Flow would paste through this app's Edit › Paste item.
+        // Nothing is pressed.
+        report["pasteMenuCommandFound"] = NativePasteCommand.find(for: target.processIdentifier) != nil
+        describe("plain")
+        systemWide("systemWidePlain")
+        // Chromium and some custom toolkits build their tree only when asked.
+        for attribute in ["AXManualAccessibility", "AXEnhancedUserInterface"] {
+            let status = AXUIElementSetAttributeValue(app, attribute as CFString, kCFBooleanTrue)
+            report["set\(attribute)"] = Int(status.rawValue)
+        }
+        try? await Task.sleep(for: .milliseconds(500))
+        describe("afterEnablingAccessibility")
+        try? await Task.sleep(for: .seconds(2))
+        describe("afterEnablingAccessibility2500ms")
+        systemWide("systemWideAfter")
+        focusedDescendant("windowWalk")
+    }
+
     @MainActor
     static func run() -> Never {
         var failures = 0
@@ -286,6 +401,14 @@ enum SelfCheck {
         var zedTarget = FrontApp.unknown
         zedTarget.bundleID = "dev.zed.Zed"
         expect(zedTarget.prefersClipboardPaste, "Zed bypasses direct AX insertion")
+        expect(FrontApp.acceptsText(bundleID: "dev.zed.Zed", focusedRole: kAXWindowRole as String, fieldIsEditable: false),
+               "a focused Zed window counts as its editor, since Zed exposes no text element")
+        expect(FrontApp.acceptsText(bundleID: "dev.zed.Zed-Preview", focusedRole: nil, fieldIsEditable: false),
+               "and so does Zed with no focused element at all")
+        expect(!FrontApp.acceptsText(bundleID: "dev.zed.Zed", focusedRole: kAXButtonRole as String, fieldIsEditable: false),
+               "a focused Zed button still gets the clipboard")
+        expect(!FrontApp.acceptsText(bundleID: "com.apple.finder", focusedRole: kAXWindowRole as String, fieldIsEditable: false),
+               "other apps still need a real editable field")
 
         section("shortcut isolation")
         let monitor = HotkeyMonitor()
@@ -576,6 +699,105 @@ enum SelfCheck {
                "Hinglish fallback removes formal Hindi schwas")
         expect(TranscriptionLanguage.hinglish.detail.contains("Roman"),
                "the language setting explains its output script")
+
+        // MARK: Paste delivery
+
+        section("paste delivery")
+        // Menu bar › Edit › [Copy ⌘C, Paste ⌘V, Paste and Match Style ⌥⇧⌘V]. AX modifier
+        // masks leave Command implicit: 0 is ⌘ alone, 3 adds Shift and Option.
+        let menuTree: [Int: (NativePasteMenuMetadata, [Int])] = [
+            0: (.init(role: .menuBar), [1]),
+            1: (.init(role: .menuBarItem), [2]),
+            2: (.init(role: .menu), [3, 4, 5]),
+            3: (.init(role: .menuItem, commandCharacter: "C", commandModifiers: 0), []),
+            4: (.init(role: .menuItem, commandCharacter: "V", commandModifiers: 0), []),
+            5: (.init(role: .menuItem, commandCharacter: "V", commandModifiers: 3), []),
+        ]
+        func menuSearch(_ tree: [Int: (NativePasteMenuMetadata, [Int])]) -> NativePasteCommandDiscovery<Int> {
+            NativePasteCommandDiscovery(metadata: { tree[$0]?.0 }, children: { node, _ in tree[node]?.1 },
+                                        sameElement: ==, now: { 0 }, isCancelled: { false })
+        }
+        expect(menuSearch(menuTree).find(in: 0, deadline: 1) == 4, "the one plain ⌘V menu item is found")
+        var twoPastes = menuTree
+        twoPastes[5] = (.init(role: .menuItem, commandCharacter: "v", commandModifiers: 0), [])
+        expect(menuSearch(twoPastes).find(in: 0, deadline: 1) == nil, "two ⌘V items are ambiguous, so no menu paste")
+        expect(menuSearch(menuTree).find(in: 0, deadline: 0) == nil, "a menu walk past its deadline finds nothing")
+        var presses = 0
+        let disabledPaste = NativePasteCommandInvocation<Int>(
+            isTrusted: { true }, isCancelled: { false }, isCommand: { _ in .allowed },
+            isEnabled: { _ in .unavailable }, supportsPress: { _ in .allowed },
+            performPress: { _ in presses += 1; return .success })
+        expect(disabledPaste.invoke(4, canDispatch: { true }) == .unavailable && presses == 0,
+               "a disabled Paste item is never pressed")
+
+        let board = NSPasteboard(name: NSPasteboard.Name("sh.taf.flow.selfcheck.\(ProcessInfo.processInfo.processIdentifier)"))
+        board.clearContents()
+        board.setString("original", forType: .string)
+        let saved = ClipboardSnapshot(board)
+        board.clearContents()
+        board.setString("dictation", forType: .string)
+        let owned = board.changeCount
+        board.clearContents()
+        board.setString("copied meanwhile", forType: .string)
+        saved.restore(to: board, onlyIfUnchangedSince: owned)
+        expect(board.string(forType: .string) == "copied meanwhile", "a copy made during the paste is kept")
+        board.clearContents()
+        board.setString("dictation", forType: .string)
+        saved.restore(to: board, onlyIfUnchangedSince: board.changeCount)
+        expect(board.string(forType: .string) == "original", "an untouched clipboard is restored")
+        board.releaseGlobally()
+
+        // MARK: Spoken lists
+
+        section("spoken lists")
+        expect(SpokenListFormatter.format("One, apples. Two, bananas.").text == "1. apples\n2. bananas",
+               "spoken numbers become a numbered list")
+        expect(SpokenListFormatter.format("- apples\n- bananas").text == "- apples\n- bananas",
+               "dashes stay a bulleted list")
+        expect(SpokenListFormatter.format("One, 2, three.").text == "One, 2, three.",
+               "a run of bare numbers stays prose")
+        expect(SpokenListFormatter.format("I bought three oranges.").text == "I bought three oranges.",
+               "ordinary prose is untouched")
+        func compose(_ text: String, after previous: DictationContinuation? = nil) -> ComposedDictation {
+            DictationComposer.compose(SpokenListFormatter.format(text, context: previous?.list), previous: previous)
+        }
+        let firstItems = compose("Make a list. One, apples. Two, bananas.")
+        expect(firstItems.insertion == "1. apples\n2. bananas", "a list command starts a list")
+        let nextItem = compose("Next item, oranges.", after: firstItems.continuation)
+        expect(nextItem.insertion == "\n3. oranges", "a later dictation continues the numbering")
+        expect(compose("More syrup.", after: nextItem.continuation).insertion == "\n4. More syrup",
+               "plain words in an open list become the next item")
+        var memory = DictationContinuationMemory<String>()
+        memory.remember(nextItem.continuation, for: "app", now: 0)
+        expect(memory.continuation(for: "app", now: 60) != nil, "an open list is remembered")
+        expect(memory.continuation(for: "app", now: 15 * 60) == nil, "and forgotten after 15 minutes")
+
+        // MARK: Microphones
+
+        section("microphones")
+        let builtIn = SavedMicrophone(uid: "built-in", name: "MacBook Microphone", transport: .builtIn)
+        let headset = SavedMicrophone(uid: "headset", name: "Headset", transport: .bluetooth)
+        var desk = MicrophonePreferences()
+        desk.addToPriority(headset)
+        desk.addToPriority(builtIn)
+        expect(MicrophoneSelectionPolicy.resolve(preferences: desk, available: [builtIn, headset],
+                                                 systemDefaultUID: "built-in").device == headset,
+               "automatic takes the first connected microphone in the list")
+        expect(MicrophoneSelectionPolicy.resolve(preferences: desk, available: [builtIn],
+                                                 systemDefaultUID: "built-in").device == builtIn,
+               "and skips one that is disconnected")
+        let fixed = MicrophonePreferences(selection: .fixed(headset))
+        expect(MicrophoneSelectionPolicy.resolve(preferences: fixed, available: [builtIn],
+                                                 systemDefaultUID: "built-in").reason == .fallback(requested: headset),
+               "a disconnected fixed device falls back and says so")
+        expect(MicrophoneSelectionPolicy.resolve(preferences: fixed, available: [],
+                                                 systemDefaultUID: nil).device == nil,
+               "no inputs resolves to no device")
+        expect((try? desk.addProfile(named: " default ")) == nil, "list names must be unique")
+        var meter = AudioLevelMeter()
+        expect(meter.update(rms: 0, frameCount: 800, sampleRate: 16_000) == 0, "silence meters as zero")
+        for _ in 0..<20 { meter.update(rms: 0.125, frameCount: 800, sampleRate: 16_000) }
+        expect(meter.level > 0.99, "-18 dBFS fills the bar")
 
         print("\n\(checks - failures)/\(checks) passed")
         exit(failures == 0 ? 0 : 1)
