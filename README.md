@@ -133,8 +133,19 @@ Voice commands ride the same round trip as ordinary dictation: "scratch that",
 
 If no editable text field has focus, Flow leaves the finished text on the clipboard
 and says "Copied to clipboard" in the panel. It does not send a paste shortcut to the
-frontmost window. Zed uses paste instead of direct Accessibility text writes when
-an editable field is detected.
+frontmost window. Zed is the exception: its GPU-drawn editor exposes no text
+element to Accessibility (the focused element is the window itself), so Flow
+treats a focused Zed window as the editor and always pastes there. Electron apps
+(T3 Code, Slack, VS Code) report no focused field at all until an assistive app asks
+for their accessibility tree, so Flow sets `AXManualAccessibility` on each one as it
+comes to the front.
+
+Pasting follows Sotto's rules. Flow presses the app's own Edit › Paste when there is
+exactly one plain ⌘V item, and sends a ⌘V keystroke only when that menu press was
+never sent. It waits for the hotkey's modifiers to come up first, marks the temporary
+clipboard item transient and local to this Mac, and puts your old clipboard back only
+if you have not copied something since. Fields inside web pages always get a paste,
+and fields marked as protected content are treated like password fields.
 
 Only one Flow process may own the global hotkey. If the installed app is already
 running and a second copy launches from a build directory, the newer copy exits before

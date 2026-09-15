@@ -14,12 +14,27 @@ enum DictationPhase: Equatable, Sendable {
     case inserted(String)
     /// No editable field had focus, so the text remains on the clipboard.
     case copied(String)
+    /// A microphone test finished. Nothing was inserted or saved.
+    case tested(String)
+    /// A spoken list command, such as "start a numbered list", changed list state only.
+    case listUpdated
+    /// The paste went out but the field showed no sign of it, so the text is also on
+    /// the clipboard.
+    case unconfirmed(String)
     case failed(String)
 
     var isBusy: Bool {
         switch self {
-        case .idle, .failed, .inserted, .copied: false
+        case .idle, .failed, .inserted, .copied, .tested, .listUpdated, .unconfirmed: false
         case .preparing, .recording, .processing: true
+        }
+    }
+
+    /// States the user should look at before carrying on.
+    var needsAttention: Bool {
+        switch self {
+        case .failed, .unconfirmed: true
+        default: false
         }
     }
 }
@@ -37,7 +52,31 @@ enum DictationTarget: Equatable, Sendable {
 final class DictationController {
     let levels = AudioLevels()
 
-    private(set) var phase: DictationPhase = .idle
+    private(set) var phase: DictationPhase = .idle {
+        didSet {
+            if phase == .recording {
+                if recordingStartedAt == nil {
+                    recordingStartedAt = .now
+                    watchRecordingLimit()
+                }
+            } else {
+                if recordingStartedAt != nil { recordingStartedAt = nil }
+                if phase == .idle, limitNotice != nil { limitNotice = nil }
+            }
+        }
+    }
+    /// When the microphone went live, for the panel's clock. Nil outside recording.
+    private(set) var recordingStartedAt: Date?
+    /// The input this dictation records from, for the microphone settings pane.
+    private(set) var recordingInputName: String?
+    /// "Recording limit in 0:30", or why the recording stopped on its own.
+    private(set) var limitNotice: String?
+    /// "Continuing at item 3" while a spoken list is still open where you are dictating.
+    private(set) var listHint: String?
+    /// True from the start of a microphone test until its result is shown.
+    private(set) var isTesting = false
+    /// What the last microphone test heard, for the settings pane.
+    private(set) var lastTestTranscript: String?
     /// The live transcript, volatile tail included. Shown, never inserted.
     private(set) var transcript = ""
     private(set) var cleanupAvailability: CleanupAvailability = .unknown
@@ -60,6 +99,9 @@ final class DictationController {
 
     private var startedAt: Date?
     private var run: Task<Void, Never>?
+    @ObservationIgnored private var limitTask: Task<Void, Never>?
+    /// Open spoken lists, per place. Forgotten after 15 minutes.
+    @ObservationIgnored private var continuations = DictationContinuationMemory<String>()
     /// Text produced when the target is a note rather than the cursor.
     var onNoteText: ((UUID, String) -> Void)?
 
@@ -199,26 +241,62 @@ final class DictationController {
     /// Hotkey down.
     func begin() {
         guard !phase.isBusy else { return }
+        isTesting = false
+        startDictation()
+    }
 
+    /// Records from the chosen microphone and shows what Flow heard, without inserting
+    /// or saving anything.
+    func beginTest() {
+        guard !phase.isBusy else { return }
+        isTesting = true
+        startDictation()
+    }
+
+    private func startDictation() {
         // Capture the target before anything else. The panel never takes focus, but
         // the answer should come from the moment you pressed the key.
-        switch target {
-        case .cursor: targetApp = FrontApp.current()
-        case .note: targetApp = .flowNote
+        if isTesting {
+            targetApp = .flowNote
+        } else {
+            switch target {
+            case .cursor: targetApp = FrontApp.current()
+            case .note: targetApp = .flowNote
+            }
         }
 
         // Only typing into another app needs Accessibility. Dictating into a Flow note
-        // never leaves the app, so it must not be gated on it.
-        if case .cursor = target, !Permissions.hasAccessibility {
+        // or a microphone test never leaves the app, so it must not be gated on it.
+        if !isTesting, case .cursor = target, !Permissions.hasAccessibility {
             fail(Inserter.InsertError.noAccessibility.localizedDescription)
             Permissions.requestAccessibility()
             return
         }
-        if case .cursor = target, targetApp.isSecure {
+        if !isTesting, case .cursor = target, targetApp.isSecure {
             let reason = Inserter.InsertError.secureField.localizedDescription
             fail(reason)
             if Settings.shared.notifyOnInsert { Toast.blocked(reason) }
             return
+        }
+
+        let devices = AudioDevices.snapshot()
+        let resolution = MicrophoneSelectionPolicy.resolve(
+            preferences: Settings.shared.microphones,
+            available: devices.inputs.map(\.saved),
+            systemDefaultUID: devices.systemDefaultUID
+        )
+        guard let input = resolution.device else {
+            fail("No microphone is available. Connect an input and try again.")
+            return
+        }
+        recordingInputName = input.name
+        limitNotice = nil
+
+        let anchor = Self.continuationAnchor(isTesting ? nil : target, app: targetApp)
+        if let list = continuations.continuation(for: anchor, now: Self.uptime)?.list {
+            listHint = list.style == .numbered ? "Continuing at item \(list.nextNumber)" : "Continuing your list"
+        } else {
+            listHint = nil
         }
 
         transcript = ""
@@ -229,8 +307,8 @@ final class DictationController {
         // App-specific terms help the speech recognizer itself, before cleanup gets a
         // chance to repair words such as TypeScript, GraphQL, or Kubernetes.
         let vocabulary = Array(Set(lexicon.words + targetApp.recognitionHints)).sorted()
-        // Read here, on the main actor; the pipeline runs off it.
-        let inputDeviceUID = Settings.shared.inputDeviceUID
+        // Resolved above, on the main actor; the pipeline runs off it.
+        let inputDeviceUID = input.uid
         run = Task { [pipeline, levels] in
             guard await AudioCapture.requestMicAccess() else {
                 self.fail(AudioCapture.CaptureError.micDenied.localizedDescription)
@@ -270,15 +348,18 @@ final class DictationController {
         }
     }
 
-    /// Hotkey up. Finalize, clean, insert, record.
+    /// Hotkey up. Finalize, format lists, clean, insert, record.
     func end() {
-        guard phase.isBusy else { return }
+        // Processing counts as busy too. A recording the limit already stopped must not
+        // be finished a second time when the key comes up.
+        guard phase.isBusy, phase != .processing else { return }
         let duration = startedAt.map { Date.now.timeIntervalSince($0) } ?? 0
         startedAt = nil
         phase = .processing
 
         let app = targetApp
-        let destination = target
+        // Nil means a microphone test: shown, never delivered.
+        let destination: DictationTarget? = isTesting ? nil : target
         let previous = run
 
         run = Task { [pipeline, cleanup, inserter, library, lexicon] in
@@ -296,48 +377,103 @@ final class DictationController {
 
             guard !raw.isEmpty else {
                 // Distinguish "the mic gave us nothing" from "you did not say anything".
-                await MainActor.run {
-                    if self.levels.peak <= 0.001 {
-                        self.fail("No sound reached the microphone. Check the input device in System Settings › Sound.")
-                    } else {
-                        self.phase = .idle
-                    }
+                if self.levels.peak <= 0.001 {
+                    self.fail("No sound reached the microphone. Check the input in Flow's Microphone settings.")
+                } else {
+                    self.isTesting = false
+                    self.phase = .idle
                 }
                 return
             }
 
-            // In-note dictation skips cleanup's command handling: you are writing, not
-            // driving another app.
+            // Spoken lists first, on the raw words. Cleanup could rewrite "two, bananas"
+            // into prose before the formatter ever saw the markers.
+            let anchor = Self.continuationAnchor(destination, app: app)
+            let openList = self.continuations.continuation(for: anchor, now: Self.uptime)
+            let formatted = SpokenListFormatter.format(raw, context: openList?.list)
+            let spokenList = formatted.containsList || formatted.isControlOnly
+                || formatted.endedList || formatted.context != nil
+
+            var composed: ComposedDictation?
+            var decision: Decision
+            if spokenList {
+                let result = DictationComposer.compose(formatted, previous: openList)
+                guard !result.insertion.isEmpty else {
+                    // "Start a numbered list" on its own: nothing to type, only state.
+                    self.continuations.remember(Self.worthKeeping(result.continuation), for: anchor, now: Self.uptime)
+                    self.transcript = ""
+                    self.isTesting = false
+                    self.phase = formatted.isControlOnly ? .listUpdated : .idle
+                    if formatted.isControlOnly { self.dismissAfterBeat() }
+                    return
+                }
+                composed = result
+                decision = .raw(result.insertion)
+            } else {
+                decision = await self.cleanedDecision(raw: raw, app: app, cleanup: cleanup, lexicon: lexicon)
+                // Prose right after "end list" still starts its own paragraph.
+                if let openList, decision.mode == .insert || decision.mode == .format {
+                    let result = DictationComposer.compose(formatted.replacingText(decision.text), previous: openList)
+                    composed = result
+                    decision.text = result.insertion
+                }
+            }
+
+            guard let destination else {
+                let text = decision.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                self.continuations.remember(Self.worthKeeping(composed?.continuation), for: anchor, now: Self.uptime)
+                self.lastTestTranscript = text
+                self.transcript = text
+                self.isTesting = false
+                self.phase = .tested(text)
+                self.dismissAfterBeat(.seconds(2))
+                return
+            }
+
+            // In-note dictation skips insertion entirely: you are writing, not driving
+            // another app.
             if case .note(let id) = destination {
-                let decision = await self.cleanedDecision(raw: raw, app: app, cleanup: cleanup, lexicon: lexicon)
-                await MainActor.run {
-                    self.onNoteText?(id, decision.text)
-                    self.finish(delivery: .init(text: decision.text, destination: .textField),
-                                raw: raw, cleaned: decision.text,
-                                app: app, duration: duration, library: library)
-                }
+                self.onNoteText?(id, decision.text)
+                self.continuations.remember(Self.worthKeeping(composed?.continuation), for: anchor, now: Self.uptime)
+                self.finish(delivery: .init(text: decision.text, destination: .textField), confirmed: true,
+                            raw: raw, cleaned: decision.text, app: app, duration: duration, library: library)
                 return
             }
-
-            let decision = await self.cleanedDecision(raw: raw, app: app, cleanup: cleanup, lexicon: lexicon)
 
             do {
-                let (delivery, insertionApp) = try await MainActor.run {
-                    // Focus may have changed during recognition or cleanup. Decide
-                    // whether to insert or copy using the field active now.
-                    let current = FrontApp.current()
-                    return (try inserter.apply(decision, in: current), current)
-                }
+                // Let the hotkey's modifiers come up, so a keystroke paste is plain ⌘V.
+                await inserter.waitForModifierRelease()
+                // Focus may have changed during recognition or cleanup. Decide whether
+                // to insert or copy using the field active now.
+                let current = FrontApp.current()
+                let checkable = decision.mode == .insert || decision.mode == .format
+                let caret = checkable ? inserter.caretSnapshot(for: current) : nil
+                let delivery = try inserter.apply(decision, in: current)
 
                 // A spoken correction is the best training signal there is.
                 if decision.mode == .replace, let target = decision.target {
-                    await MainActor.run { lexicon.record(from: target, to: decision.text) }
+                    lexicon.record(from: target, to: decision.text)
                 }
 
-                await MainActor.run {
-                    self.finish(delivery: delivery, raw: raw, cleaned: decision.text,
-                                app: insertionApp, duration: duration, library: library)
+                var confirmed = true
+                if delivery.destination == .textField, let caret {
+                    confirmed = await inserter.confirmInsertion(since: caret)
+                    if !confirmed {
+                        inserter.keepOnClipboard(decision.text.trimmingCharacters(in: .whitespacesAndNewlines))
+                    }
                 }
+
+                // A list only continues where its last item verifiably landed.
+                let landedAt = Self.continuationAnchor(destination, app: current)
+                if confirmed, delivery.destination == .textField {
+                    self.continuations.remember(Self.worthKeeping(composed?.continuation), for: landedAt, now: Self.uptime)
+                } else {
+                    self.continuations.forget(landedAt)
+                }
+                if landedAt != anchor { self.continuations.forget(anchor) }
+
+                self.finish(delivery: delivery, confirmed: confirmed, raw: raw, cleaned: decision.text,
+                            app: current, duration: duration, library: library)
             } catch {
                 self.fail(error.localizedDescription)
             }
@@ -367,9 +503,10 @@ final class DictationController {
     }
 
     private func finish(
-        delivery: Inserter.Result, raw: String, cleaned: String,
+        delivery: Inserter.Result, confirmed: Bool, raw: String, cleaned: String,
         app: FrontApp, duration: TimeInterval, library: Library
     ) {
+        let cleaned = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
         library.add(DictationRecord(
             raw: raw,
             cleaned: cleaned == raw ? "" : cleaned,
@@ -377,19 +514,21 @@ final class DictationController {
             appName: app.name,
             duration: duration
         ))
-        transcript = delivery.text
+        let shown = delivery.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        transcript = shown
         switch delivery.destination {
-        case .textField: phase = .inserted(delivery.text)
-        case .clipboard: phase = .copied(delivery.text)
+        case .textField: phase = confirmed ? .inserted(shown) : .unconfirmed(shown)
+        case .clipboard: phase = .copied(shown)
         }
-        if Settings.shared.playSounds { NSSound(named: "Tink")?.play() }
+        if Settings.shared.playSounds { NSSound(named: confirmed ? "Tink" : "Funk")?.play() }
         if Settings.shared.notifyOnInsert {
             switch delivery.destination {
-            case .textField: Toast.inserted(delivery.text, into: app.name)
-            case .clipboard: Toast.copied(delivery.text)
+            case .textField: Toast.inserted(shown, into: app.name)
+            case .clipboard: Toast.copied(shown)
             }
         }
-        dismissAfterBeat()
+        // "Check insertion" has to stay up long enough to read.
+        dismissAfterBeat(confirmed ? .milliseconds(700) : .seconds(3))
     }
 
     /// Escape, or a dictation you thought better of.
@@ -397,6 +536,8 @@ final class DictationController {
         run?.cancel()
         run = nil
         startedAt = nil
+        limitTask?.cancel()
+        isTesting = false
         Task { [pipeline] in
             await pipeline.cancel()
             await MainActor.run {
@@ -424,6 +565,8 @@ final class DictationController {
     private func fail(_ message: String) {
         log.error("\(message, privacy: .public)")
         Task { [pipeline] in await pipeline.cancel() }
+        limitTask?.cancel()
+        isTesting = false
         transcript = ""
         levels.reset()
         phase = .failed(message)
@@ -435,18 +578,62 @@ final class DictationController {
     }
 
     /// The panel collapses the moment insertion finishes. Under 600ms, nobody notices.
-    private func dismissAfterBeat() {
+    private func dismissAfterBeat(_ delay: Duration = .milliseconds(700)) {
         Task {
-            try? await Task.sleep(for: .milliseconds(700))
-            if case .inserted = self.phase {
+            try? await Task.sleep(for: delay)
+            switch self.phase {
+            case .inserted, .copied, .tested, .listUpdated, .unconfirmed:
                 self.phase = .idle
                 self.transcript = ""
                 self.levels.reset()
-            } else if case .copied = self.phase {
-                self.phase = .idle
-                self.transcript = ""
-                self.levels.reset()
+            case .idle, .preparing, .recording, .processing, .failed:
+                break
             }
         }
+    }
+
+    // MARK: - Recording limit
+
+    /// Counts down the last 30 seconds, then stops the recording as if the key came up.
+    private func watchRecordingLimit() {
+        limitTask?.cancel()
+        let limit = Settings.shared.recordingLimit
+        guard limit != .off else { return }
+        limitTask = Task { [weak self] in
+            let started = ContinuousClock.now
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(250))
+                guard let self, self.phase == .recording else { return }
+                let remaining = limit.rawValue - Int((ContinuousClock.now - started).components.seconds)
+                if remaining <= 0 {
+                    self.limitNotice = "Stopped at the \(limit.noticeName) limit"
+                    self.end()
+                    return
+                }
+                let notice = remaining <= 30 ? "Recording limit in \(hudDuration(TimeInterval(remaining)))" : nil
+                if notice != self.limitNotice { self.limitNotice = notice }
+            }
+        }
+    }
+
+    // MARK: - List continuation
+
+    private static var uptime: TimeInterval { ProcessInfo.processInfo.systemUptime }
+
+    /// Lists continue per place: the microphone test, one Flow note, or one kind of field
+    /// in one app. Flow never reads the document itself.
+    private static func continuationAnchor(_ destination: DictationTarget?, app: FrontApp) -> String {
+        switch destination {
+        case nil: "test"
+        case .note(let id)?: "note:\(id.uuidString)"
+        case .cursor?: "app:\(app.bundleID):\(app.axRole)"
+        }
+    }
+
+    /// Plain prose leaves nothing to continue. Keeping it would add a trailing space to
+    /// every ordinary dictation that followed.
+    private static func worthKeeping(_ continuation: DictationContinuation?) -> DictationContinuation? {
+        guard let continuation, continuation.list != nil || continuation.boundary != .none else { return nil }
+        return continuation
     }
 }
