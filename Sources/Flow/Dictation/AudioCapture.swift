@@ -95,7 +95,7 @@ final class AudioCapture: @unchecked Sendable {
         // well inside the 100ms budget.
         input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
             guard let self else { return }
-            self.onLevel(Self.rms(of: buffer))
+            self.meter(buffer)
             self.consume(buffer)
         }
 
@@ -180,6 +180,10 @@ final class AudioCapture: @unchecked Sendable {
             engine.inputNode.removeTap(onBus: 0)
             engine.stop()
         }
+        // The tap is gone, so nothing else is touching the meter now.
+        levelMeter = AudioLevelMeter()
+        meterSumSquares = 0
+        meterFrames = 0
         lock.withLock {
             continuation?.finish()
             continuation = nil
@@ -243,20 +247,30 @@ final class AudioCapture: @unchecked Sendable {
 
     // MARK: - Amplitude
 
-    /// Plain RMS across channel 0. No FFT, no DSP. Bars that move with your voice are
-    /// the whole feature.
-    private static func rms(of buffer: AVAudioPCMBuffer) -> Float {
-        guard let channel = buffer.floatChannelData?[0] else { return 0 }
-        let count = Int(buffer.frameLength)
-        guard count > 0 else { return 0 }
+    // Touched only by the tap callback, which never overlaps itself, and by stop() after
+    // the tap is removed.
+    private var levelMeter = AudioLevelMeter()
+    private var meterSumSquares: Double = 0
+    private var meterFrames = 0
 
-        var sum: Float = 0
-        for i in 0..<count { sum += channel[i] * channel[i] }
-        let rms = (sum / Float(count)).squareRoot()
+    /// RMS over 50 ms windows of channel 0, smoothed by Sotto's meter. The engine picks
+    /// its own buffer size, so windows span buffers and one buffer can emit several levels.
+    private func meter(_ buffer: AVAudioPCMBuffer) {
+        guard let samples = buffer.floatChannelData?[0] else { return }
+        let sampleRate = buffer.format.sampleRate
+        let windowFrames = max(1, Int(sampleRate * 0.05))
 
-        // Speech sits low in linear terms; map -50dB...0dB onto 0...1 so the bars use
-        // their full height at ordinary talking volume.
-        let db = 20 * log10(max(rms, 1e-7))
-        return min(max((db + 50) / 50, 0), 1)
+        for index in 0..<Int(buffer.frameLength) {
+            let sample = samples[index]
+            let magnitude = Double(sample.isFinite ? min(1, abs(sample)) : 0)
+            meterSumSquares += magnitude * magnitude
+            meterFrames += 1
+            if meterFrames >= windowFrames {
+                let rms = (meterSumSquares / Double(meterFrames)).squareRoot()
+                onLevel(levelMeter.update(rms: rms, frameCount: meterFrames, sampleRate: sampleRate))
+                meterSumSquares = 0
+                meterFrames = 0
+            }
+        }
     }
 }

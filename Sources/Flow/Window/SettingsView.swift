@@ -5,13 +5,14 @@ import SwiftUI
 /// One pane of Settings. Named so the main window's sidebar can address them
 /// individually instead of duplicating the controls.
 enum SettingsPane: String, CaseIterable, Hashable, Identifiable {
-    case general, vocabulary, api, privacy
+    case general, microphone, vocabulary, api, privacy
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .general: "General"
+        case .microphone: "Microphone"
         case .vocabulary: "Vocabulary"
         case .api: "API"
         case .privacy: "Privacy"
@@ -21,6 +22,7 @@ enum SettingsPane: String, CaseIterable, Hashable, Identifiable {
     var icon: String {
         switch self {
         case .general: "gearshape"
+        case .microphone: "mic"
         case .vocabulary: "character.book.closed"
         case .api: "terminal"
         case .privacy: "hand.raised"
@@ -52,6 +54,7 @@ struct SettingsView: View {
         } else {
             TabView {
                 general.tabItem { Label("General", systemImage: "gearshape") }
+                MicrophoneSettingsView(env: env).tabItem { Label("Microphone", systemImage: "mic") }
                 api.tabItem { Label("API", systemImage: "terminal") }
                 vocabulary.tabItem { Label("Vocabulary", systemImage: "character.book.closed") }
                 privacy.tabItem { Label("Privacy", systemImage: "hand.raised") }
@@ -64,6 +67,7 @@ struct SettingsView: View {
     private func content(for pane: SettingsPane) -> some View {
         switch pane {
         case .general: general
+        case .microphone: MicrophoneSettingsView(env: env)
         case .vocabulary: vocabulary
         case .api: api
         case .privacy: privacy
@@ -71,17 +75,6 @@ struct SettingsView: View {
     }
 
     // MARK: - General
-
-    /// Read once when the pane appears. Devices come and go, but re-enumerating on every
-    /// redraw makes the picker flicker while it is open.
-    @State private var inputDevices: [AudioDevices.Device] = []
-
-    private var defaultInputLabel: String {
-        if let d = AudioDevices.systemDefaultInput {
-            return "System default (\(d.name))"
-        }
-        return "System default"
-    }
 
     private var general: some View {
         Form {
@@ -107,13 +100,6 @@ struct SettingsView: View {
                     ForEach(PanelSize.allCases) { Text($0.label).tag($0) }
                 }
 
-                Picker("Microphone", selection: $settings.inputDeviceUID) {
-                    Text(defaultInputLabel).tag("")
-                    Divider()
-                    ForEach(inputDevices) { Text($0.label).tag($0.uid) }
-                }
-                .onAppear { inputDevices = AudioDevices.inputs() }
-
                 Picker("Language", selection: $settings.transcriptionLanguage) {
                     ForEach(TranscriptionLanguage.allCases) { Text($0.label).tag($0) }
                 }
@@ -125,19 +111,13 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                if let chosen = AudioDevices.device(uid: settings.inputDeviceUID) ?? AudioDevices.systemDefaultInput,
-                   chosen.isTelephonyQuality {
-                    Label(
-                        "\(chosen.name) is in its 8 kHz call profile. Bluetooth speakers often deliver no audio at all here — pick the built-in microphone if dictation comes back empty.",
-                        systemImage: "exclamationmark.triangle"
-                    )
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                }
-
                 LabeledContent("Stop a dictation") {
                     Text("Escape, or the \u{00D7} on the panel")
                         .foregroundStyle(.secondary)
+                }
+
+                Picker("Stop recording after", selection: $settings.recordingLimit) {
+                    ForEach(RecordingLimit.allCases) { Text($0.label).tag($0) }
                 }
 
                 Toggle("Play a sound when text lands", isOn: $settings.playSounds)

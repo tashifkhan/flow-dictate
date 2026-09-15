@@ -10,7 +10,10 @@ final class AppEnvironment {
     let lexicon: Lexicon
     let controller: DictationController
     let presenter: PanelPresenter
+    /// Connected inputs, kept current by Core Audio listeners for the microphone pane.
+    let devices = AudioDeviceMonitor()
     private let hotkey = HotkeyMonitor()
+    @ObservationIgnored private var activationObserver: NSObjectProtocol?
     /// Assigned in `init`, because `@Observable` has no room for a lazy stored property
     /// and the server needs a reference back to this environment.
     private(set) var server: FlowServer!
@@ -77,6 +80,26 @@ final class AppEnvironment {
         started = true
         controller.warmUp()
 
+        // A renamed device keeps its place in the priority lists under its new name.
+        devices.onChange = { inputs in
+            let settings = Settings.shared
+            let refreshed = settings.microphones.refreshingNames(from: inputs.map(\.saved))
+            if refreshed != settings.microphones { settings.microphones = refreshed }
+        }
+        devices.start()
+
+        // Electron apps expose their text fields only once asked. Ask as each one comes
+        // to the front, so the first dictation into it pastes instead of copying.
+        activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
+        ) { note in
+            guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
+            MainActor.assumeIsolated { FrontApp.prepareAccessibility(for: app) }
+        }
+        if let front = NSWorkspace.shared.frontmostApplication {
+            FrontApp.prepareAccessibility(for: front)
+        }
+
         // The panel follows the dictation, not the other way round.
         hotkey.onPress = { [weak self] in
             guard let self else { return }
@@ -139,7 +162,7 @@ final class AppEnvironment {
     /// Start a dictation without the keyboard, for the days the hotkey feels far away.
     func toggleFromUI() {
         switch controller.phase {
-        case .idle, .failed, .inserted, .copied:
+        case .idle, .failed, .inserted, .copied, .tested, .listUpdated, .unconfirmed:
             controller.begin()
             presenter.show()
         case .recording, .preparing:
@@ -147,6 +170,17 @@ final class AppEnvironment {
             hidePanelWhenSettled()
         case .processing:
             break
+        }
+    }
+
+    /// Starts or finishes a microphone test from the settings pane.
+    func toggleTest() {
+        if controller.phase.isBusy {
+            controller.end()
+            hidePanelWhenSettled()
+        } else {
+            controller.beginTest()
+            presenter.show()
         }
     }
 
@@ -169,7 +203,11 @@ final class AppEnvironment {
             // Give the panel long enough to show the result before it collapses.
             while controller.phase.isBusy { try? await Task.sleep(for: .milliseconds(80)) }
             try? await Task.sleep(for: .milliseconds(800))
-            if !controller.phase.isBusy { presenter.hide() }
+            // "Check insertion" and a test result stay up; they hide when the phase idles.
+            switch controller.phase {
+            case .unconfirmed, .tested: return
+            default: if !controller.phase.isBusy { presenter.hide() }
+            }
         }
     }
 
@@ -178,7 +216,8 @@ final class AppEnvironment {
         if note.text.isEmpty {
             note.text = text
         } else {
-            let separator = note.text.hasSuffix(" ") || note.text.hasSuffix("\n") ? "" : " "
+            // List text brings its own line breaks.
+            let separator = note.text.hasSuffix(" ") || note.text.hasSuffix("\n") || text.hasPrefix("\n") ? "" : " "
             note.text += separator + text
         }
         library.save(note)
