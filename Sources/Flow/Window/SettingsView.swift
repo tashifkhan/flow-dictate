@@ -326,7 +326,10 @@ struct SettingsView: View {
                 Text("A custom model only attaches to the fallback transcriber, so turning this on trades \(Text("SpeechTranscriber").italic()) for a worse one. Try the word list alone first.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                    // No vertical fixedSize: the window takes its minimum height from
+                    // this pane, and a fixed-height paragraph measured at zero width is
+                    // one character per line, taller than the screen.
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
                 HStack(spacing: 8) {
                     Button(env.controller.hasTrainedModel ? "Retrain" : "Train now") {
