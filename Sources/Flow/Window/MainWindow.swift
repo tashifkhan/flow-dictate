@@ -24,10 +24,11 @@ struct MainWindow: View {
     @Bindable var env: AppEnvironment
     @State private var selection: SidebarItem? = .dictations
     @State private var mode: ViewMode = .list
+    @State private var columnVisibility = NavigationSplitViewVisibility.all
     @AppStorage("viewMode") private var storedMode = ViewMode.list.rawValue
 
     var body: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
             sidebar
         } detail: {
             detail
@@ -177,6 +178,14 @@ struct MainWindow: View {
 
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
+        ToolbarItem(placement: .navigation) {
+            Button {
+                columnVisibility = columnVisibility == .all ? .detailOnly : .all
+            } label: {
+                Label("Sidebar", systemImage: "sidebar.left")
+            }
+            .help("Show or hide the sidebar")
+        }
         ToolbarItem(placement: .primaryAction) {
             Picker("View", selection: $mode) {
                 Image(systemName: "list.bullet").tag(ViewMode.list)
