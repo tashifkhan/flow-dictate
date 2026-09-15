@@ -39,6 +39,7 @@ final class FloatingPanel: NSPanel {
 final class PanelPresenter {
     private var panel: FloatingPanel?
     private let controller: DictationController
+    private let presentation = PanelPresentation()
 
     /// Follows the setting, so switching size takes effect on the next show().
     private static var size: CGSize { Settings.shared.panelSize.frame }
@@ -48,11 +49,12 @@ final class PanelPresenter {
     }
 
     func show() {
+        presentation.id = UUID()
         let panel = panel ?? make()
         self.panel = panel
         // The hosting view self-sizes, but the window does not shrink on its own after
-        // the setting changes, so pin the height before positioning reads the frame.
-        if panel.frame.height != Self.size.height {
+        // the setting changes, so pin the size before positioning reads the frame.
+        if panel.frame.size != Self.size {
             panel.setContentSize(Self.size)
         }
         position(panel)
@@ -73,7 +75,7 @@ final class PanelPresenter {
 
     private func make() -> FloatingPanel {
         let panel = FloatingPanel(contentRect: NSRect(origin: .zero, size: Self.size))
-        let root = PanelView(controller: controller) { [weak self] in
+        let root = PanelView(controller: controller, presentation: presentation) { [weak self] in
             self?.controller.cancel()
             self?.hide()
         }
