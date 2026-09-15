@@ -1,38 +1,34 @@
 import SwiftUI
 
-/// Bars that move with your voice. No FFT, no fancy DSP; that was never the feature.
+/// Nine capsules that move with your voice, newest on the right. Sotto's meter, bar for
+/// bar: 3 pt bars, 3 pt gaps, a 3 pt floor, and a 50 ms linear glide between samples.
 struct Waveform: View {
     var levels: [Float]
-    var isLive: Bool
-    var tint: Color = .accentColor
+    var tint: Color = HUDPalette.accent
+    var height: CGFloat = 28
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: !isLive)) { _ in
-            Canvas { context, size in
-                draw(in: &context, size: size)
-            }
+    private var barHeights: [CGFloat] {
+        let count = AudioLevels.barCount
+        let recent = Array(levels.suffix(count))
+        let history = Array(repeating: Float(0), count: count - recent.count) + recent
+        return history.map { level in
+            let normalized = level.isFinite ? min(1, max(0, level)) : 0
+            return 3 + max(0, height - 3) * CGFloat(normalized)
         }
-        .accessibilityHidden(true)
     }
 
-    private func draw(in context: inout GraphicsContext, size: CGSize) {
-        guard !levels.isEmpty else { return }
-
-        let spacing: CGFloat = 3
-        let width = (size.width - spacing * CGFloat(levels.count - 1)) / CGFloat(levels.count)
-        let midY = size.height / 2
-        let minHeight = width
-
-        for (index, level) in levels.enumerated() {
-            let x = CGFloat(index) * (width + spacing)
-            let height = max(minHeight, CGFloat(level) * size.height)
-            let rect = CGRect(x: x, y: midY - height / 2, width: width, height: height)
-            let bar = Path(roundedRect: rect, cornerRadius: width / 2)
-
-            // Fade the oldest bars out so the waveform reads as scrolling, not jittering.
-            let age = Double(index) / Double(levels.count)
-            let opacity = isLive ? (0.35 + 0.65 * age) : 0.25
-            context.fill(bar, with: .color(tint.opacity(opacity)))
+    var body: some View {
+        let heights = barHeights
+        HStack(spacing: 3) {
+            ForEach(heights.indices, id: \.self) { index in
+                Capsule()
+                    .fill(tint)
+                    .frame(width: 3, height: heights[index])
+            }
         }
+        .frame(width: 51, height: height)
+        .animation(reduceMotion ? nil : .linear(duration: 0.05), value: heights)
+        .accessibilityHidden(true)
     }
 }
