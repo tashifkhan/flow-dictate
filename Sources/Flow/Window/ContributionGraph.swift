@@ -19,6 +19,8 @@ struct ContributionGraph: View {
 
     private let cell: CGFloat = 11
     private let gap: CGFloat = 3
+    private let labelWidth: CGFloat = 24
+    private let monthRowHeight: CGFloat = 11
     private let weeks = 53
 
     var body: some View {
@@ -32,19 +34,36 @@ struct ContributionGraph: View {
 
     // MARK: - Grid
 
+    /// Weekday labels stay put; the weeks scroll sideways when the card is narrower
+    /// than a year, opening on the current week.
     private var grid: some View {
         let columns = buildColumns()
-        return VStack(alignment: .leading, spacing: 4) {
-            monthLabels(columns)
-            HStack(alignment: .top, spacing: gap) {
-                weekdayLabels
-                ForEach(Array(columns.enumerated()), id: \.offset) { _, week in
-                    VStack(spacing: gap) {
-                        ForEach(week, id: \.self) { day in
-                            cellView(day)
+        return HStack(alignment: .top, spacing: gap) {
+            weekdayLabels
+                .padding(.top, monthRowHeight + 4)
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        monthLabels(columns)
+                        HStack(alignment: .top, spacing: gap) {
+                            ForEach(Array(columns.enumerated()), id: \.offset) { index, week in
+                                VStack(spacing: gap) {
+                                    ForEach(week, id: \.self) { day in
+                                        cellView(day)
+                                    }
+                                }
+                                .id(index)
+                            }
                         }
                     }
+                    // Room for a month label that starts in the last column.
+                    .padding(.trailing, 12)
+                    .padding(.bottom, 10)
                 }
+                .frame(maxWidth: .infinity)
+                .scrollIndicators(.visible, axes: .horizontal)
+                .defaultScrollAnchor(.trailing)
+                .onAppear { proxy.scrollTo(columns.count - 1, anchor: .trailing) }
             }
         }
     }
@@ -73,23 +92,24 @@ struct ContributionGraph: View {
                 Text(row % 2 == 1 ? Self.weekdaySymbols[row] : "")
                     .font(.system(size: 9))
                     .foregroundStyle(.secondary)
-                    .frame(width: 24, height: cell, alignment: .trailing)
+                    .frame(width: labelWidth, height: cell, alignment: .trailing)
             }
         }
     }
 
     private func monthLabels(_ columns: [[Day]]) -> some View {
         HStack(alignment: .bottom, spacing: gap) {
-            Spacer().frame(width: 24)
             ForEach(Array(columns.enumerated()), id: \.offset) { index, week in
-                // Label a column when its first day starts a new month.
-                Text(monthLabel(week, at: index, in: columns))
-                    .font(.system(size: 9))
-                    .foregroundStyle(.secondary)
-                    .frame(width: cell, alignment: .leading)
-                    .fixedSize()
-                    .frame(width: cell, alignment: .leading)
-                    .clipped()
+                // Label a column when its first day starts a new month. The text sits in
+                // an overlay so it runs past its one-cell column instead of wrapping.
+                Color.clear
+                    .frame(width: cell, height: monthRowHeight)
+                    .overlay(alignment: .leading) {
+                        Text(monthLabel(week, at: index, in: columns))
+                            .font(.system(size: 9))
+                            .foregroundStyle(.secondary)
+                            .fixedSize()
+                    }
             }
         }
     }
