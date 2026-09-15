@@ -46,8 +46,8 @@ struct MenuBarView: View {
             }
 
             if env.controller.phase == .recording {
-                Waveform(levels: env.controller.levels.bars, isLive: true)
-                    .frame(height: 20)
+                Waveform(levels: env.controller.levels.bars, height: 20)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         .padding(12)
@@ -61,6 +61,9 @@ struct MenuBarView: View {
         case .processing: "Cleaning up"
         case .inserted: "Inserted"
         case .copied: "Copied to clipboard"
+        case .tested: "Microphone test complete"
+        case .listUpdated: "List updated"
+        case .unconfirmed: "Check insertion. Also copied to clipboard"
         case .failed(let m): m
         }
     }
@@ -148,6 +151,12 @@ struct MenuBarView: View {
 
     private var footer: some View {
         VStack(spacing: 0) {
+            menuButton("Copy Last Dictation", "doc.on.doc") {
+                guard let last = env.library.recent(1).first else { return }
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(last.inserted, forType: .string)
+            }
+            .disabled(env.library.recent(1).isEmpty || env.controller.phase.isBusy)
             menuButton("Flow Window", "macwindow") {
                 openWindow(id: FlowApp.mainWindowID)
                 NSApp.activate(ignoringOtherApps: true)

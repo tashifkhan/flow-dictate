@@ -33,9 +33,23 @@ enum PanelSize: String, CaseIterable, Identifiable, Sendable {
     var label: String { self == .compact ? "Compact" : "Standard" }
 
     /// Positioning runs before the hosting view has laid out, so it needs a size up front.
+    /// Compact leaves room around the HUD for its glass edge and the wider error pill.
     var frame: CGSize {
-        self == .compact ? CGSize(width: 236, height: 54) : CGSize(width: 380, height: 128)
+        self == .compact ? CGSize(width: 272, height: 112) : CGSize(width: 380, height: 128)
     }
+}
+
+/// How long one recording may run before Flow stops it as if the key came up.
+enum RecordingLimit: Int, CaseIterable, Identifiable, Sendable {
+    case off = 0
+    case threeMinutes = 180
+    case fiveMinutes = 300
+    case tenMinutes = 600
+
+    var id: Int { rawValue }
+    var label: String { self == .off ? "Never" : "\(rawValue / 60) minutes" }
+    /// "3-minute", for "Stopped at the 3-minute limit".
+    var noticeName: String { "\(rawValue / 60)-minute" }
 }
 
 /// What the main window shows on open.
@@ -85,10 +99,18 @@ final class Settings {
     }
     var activation: HotkeyActivation { didSet { defaults.set(activation.rawValue, forKey: K.activation) } }
     var placement: PanelPlacement { didSet { defaults.set(placement.rawValue, forKey: K.placement) } }
-    /// Empty means "follow the system default". Stored as a device UID, which survives
-    /// reboots and re-pairings; the numeric CoreAudio id does not.
-    var inputDeviceUID: String { didSet { defaults.set(inputDeviceUID, forKey: K.inputDevice) } }
+    /// Automatic priority lists, the system default, or one fixed device, all keyed by
+    /// device UID, which survives reboots and re-pairings.
+    var microphones: MicrophonePreferences {
+        didSet {
+            guard let data = try? JSONEncoder().encode(microphones) else { return }
+            defaults.set(data, forKey: K.microphones)
+        }
+    }
     var panelSize: PanelSize { didSet { defaults.set(panelSize.rawValue, forKey: K.panelSize) } }
+    /// Off by default. Worth turning on with press-to-toggle, where a forgotten
+    /// recording is easy.
+    var recordingLimit: RecordingLimit { didSet { defaults.set(recordingLimit.rawValue, forKey: K.recordingLimit) } }
     var retention: Retention { didSet { defaults.set(retention.rawValue, forKey: K.retention) } }
     var openTo: OpenTo { didSet { defaults.set(openTo.rawValue, forKey: K.openTo) } }
     var transcriptionLanguage: TranscriptionLanguage {
@@ -118,8 +140,11 @@ final class Settings {
         static let legacyKey = "pushToTalkKey"
         static let activation = "hotkeyActivation"
         static let placement = "panelPlacement"
+        /// Read only to migrate the old single-device picker.
         static let inputDevice = "inputDeviceUID"
+        static let microphones = "microphonePreferences"
         static let panelSize = "panelSize"
+        static let recordingLimit = "recordingLimit"
         static let retention = "retention"
         static let openTo = "openTo"
         static let transcriptionLanguage = "transcriptionLanguage"
@@ -158,8 +183,19 @@ final class Settings {
         }
         activation = HotkeyActivation(rawValue: defaults.string(forKey: K.activation) ?? "") ?? .hold
         placement = PanelPlacement(rawValue: defaults.string(forKey: K.placement) ?? "") ?? .bottomCenter
-        inputDeviceUID = defaults.string(forKey: K.inputDevice) ?? ""
+        if let data = defaults.data(forKey: K.microphones),
+           let decoded = try? JSONDecoder().decode(MicrophonePreferences.self, from: data) {
+            microphones = decoded
+        } else if let uid = defaults.string(forKey: K.inputDevice), !uid.isEmpty {
+            // The old picker stored one UID. Keep that choice as a fixed device.
+            let device = AudioDevices.device(uid: uid)?.saved
+                ?? SavedMicrophone(uid: uid, name: "Microphone", transport: .other)
+            microphones = MicrophonePreferences(selection: .fixed(device))
+        } else {
+            microphones = MicrophonePreferences()
+        }
         panelSize = PanelSize(rawValue: defaults.string(forKey: K.panelSize) ?? "") ?? .compact
+        recordingLimit = RecordingLimit(rawValue: defaults.integer(forKey: K.recordingLimit)) ?? .off
         retention = Retention(rawValue: defaults.string(forKey: K.retention) ?? "") ?? .ninetyDays
         openTo = OpenTo(rawValue: defaults.string(forKey: K.openTo) ?? "") ?? .recent
         transcriptionLanguage = TranscriptionLanguage(
