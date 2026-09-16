@@ -345,6 +345,21 @@ enum SelfCheck {
                    "an explicit correction may replace the abandoned version")
             expect(CleanupService.isFaithful("anything", to: ""),
                    "an empty transcript has nothing to lose")
+
+            let previous = "multiple comments line like of the currently current changes make multiple comments with seat fix refactor colon without any scope"
+            let next = "please manually fix that and please ensure in the code like update the code so that this duplication cannot happen again"
+            expect(!CleanupService.drawsFromSpeech(previous, spoken: next),
+                   "an earlier dictation returned by the model is not a cleanup of this one")
+            expect(CleanupService.drawsFromSpeech(
+                       "Please manually fix that, and update the code so this duplication cannot happen again.",
+                       spoken: next),
+                   "a genuine cleanup of the same speech passes")
+            expect(CleanupService.drawsFromSpeech(
+                       "There are three things:\n1. Fix login.\n2. Add tests.\n3. Update the docs.",
+                       spoken: "there are three things first fix login second add tests and third update the docs"),
+                   "list numbering does not count as unspoken words")
+            expect(!CleanupService.soundsLikeCommand(next),
+                   "asking someone to fix something is not a delete command")
         }
 
         // MARK: App-aware dictation
