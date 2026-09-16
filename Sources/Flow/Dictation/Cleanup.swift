@@ -33,6 +33,8 @@ struct CleanupContext: Sendable {
     var corrections: [(said: String, meant: String)] = []
     /// The last thing Flow typed, so "scratch that" has a referent.
     var lastInsert: String?
+    /// Whether the transcript contains a command phrase. Set by `CleanupService.clean`.
+    var spokenCommand = false
 }
 
 /// Why cleanup is off, in words a person can act on.
@@ -155,6 +157,8 @@ actor CleanupService {
             return .raw(fallback)
         }
 
+        var context = context
+        context.spokenCommand = Self.soundsLikeCommand(trimmed)
         let session = LanguageModelSession(model: model) {
             instructions(for: context)
         }
@@ -165,7 +169,10 @@ actor CleanupService {
                 schema: schema,
                 options: GenerationOptions(samplingMode: .greedy)
             )
-            var decision = try parse(response.content, fallback: fallback, spoken: trimmed)
+            var decision = try parse(
+                response.content, fallback: fallback, spoken: trimmed,
+                checkSource: context.transcriptionLanguage != .hinglish
+            )
             if context.transcriptionLanguage == .hinglish {
                 decision.text = Self.romanizeHinglish(decision.text)
             }
@@ -219,7 +226,9 @@ actor CleanupService {
             "Match the speaker's tone. Do not make the writing more formal than the speech."
         }
 
-        if let last = context.lastInsert, !last.isEmpty {
+        // Only a command needs a referent. Shown to ordinary speech, the model starts
+        // echoing the previous dictation back instead of cleaning the new one.
+        if let last = context.lastInsert, !last.isEmpty, context.spokenCommand {
             "The last text you inserted was: \(last.suffix(200))"
         }
 
@@ -351,6 +360,17 @@ actor CleanupService {
         return Double(contentWords(cleaned).count) >= Double(spoken) * 0.6
     }
 
+    /// Whether the cleaned text is built from the words that were spoken. Cleanup fixes
+    /// a few misheard words; it does not swap in a different sentence. This catches the
+    /// model returning an earlier dictation, which a length check alone lets through.
+    static func drawsFromSpeech(_ cleaned: String, spoken: String) -> Bool {
+        let heard = Set(contentWords(spoken))
+        let written = contentWords(cleaned).filter { !$0.allSatisfy(\.isNumber) }
+        guard !written.isEmpty else { return true }
+        let kept = written.filter(heard.contains).count
+        return Double(kept) >= Double(written.count) * 0.5
+    }
+
     /// Converts Devanagari to plain Latin characters. The model produces more natural
     /// Hinglish; this deterministic pass guarantees Roman script if cleanup is off or
     /// unavailable, and removes any Devanagari the model accidentally leaves behind.
@@ -396,7 +416,7 @@ actor CleanupService {
     }
 
     private func parse(
-        _ content: GeneratedContent, fallback: String, spoken: String
+        _ content: GeneratedContent, fallback: String, spoken: String, checkSource: Bool
     ) throws -> Decision {
         let rawMode = (try? content.value(String.self, forProperty: "mode")) ?? "insert"
         let text = (try? content.value(String.self, forProperty: "text")) ?? fallback
@@ -412,11 +432,17 @@ actor CleanupService {
         // Commands are things you say on purpose. Left to itself the model reads a
         // sentence *about* fixing something as an instruction to fix something, and the
         // text it "replaces" is whatever the field already contained.
+        //
+        // The text of a mistaken delete is not a cleanup of this speech, so insert raw.
         if mode == .delete || mode == .replace, !Self.soundsLikeCommand(spoken) {
-            log.notice("model proposed \(rawMode, privacy: .public) with no command phrase; treating as dictation")
-            return Self.isFaithful(cleaned, to: spoken)
-                ? Decision(mode: .insert, text: cleaned, target: nil)
-                : .raw(fallback)
+            log.notice("model proposed \(rawMode, privacy: .public) with no command phrase; inserting raw")
+            return .raw(fallback)
+        }
+
+        if mode == .insert || mode == .format, checkSource,
+           !Self.drawsFromSpeech(cleaned, spoken: spoken) {
+            log.notice("cleanup returned text that was not spoken, inserting raw")
+            return .raw(fallback)
         }
 
         // Cleanup may collapse speech, but it may not turn a full thought into a summary.
