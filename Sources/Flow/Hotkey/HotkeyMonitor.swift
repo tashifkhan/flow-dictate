@@ -125,8 +125,18 @@ final class HotkeyMonitor {
 
         if hotkey.isModifierOnly {
             // Modifier changes must still reach apps so their modifier state stays valid.
-            guard type == .flagsChanged, keyCode == hotkey.keyCode else { return false }
-            set(down: event.flags.contains(hotkey.flags))
+            guard type == .flagsChanged else { return false }
+            if hotkey.isChord {
+                guard Hotkey.modifierFlag(forKeyCode: keyCode) != nil else { return false }
+                let required = hotkey.flags.rawValue
+                let present = event.flags.rawValue & Hotkey.modifierMask
+                // Start only on the exact chord, so a ⌃⌥⇧⌘ shortcut does not fire a ⌃⌥⇧
+                // hotkey. Once down, stay down until one of the chord's keys lifts.
+                set(down: isDown ? present & required == required : present == required)
+            } else {
+                guard keyCode == hotkey.keyCode else { return false }
+                set(down: event.flags.contains(hotkey.flags))
+            }
         } else if type == .keyDown, keyCode == hotkey.keyCode {
             let required = hotkey.flags.rawValue & Hotkey.modifierMask
             let present = event.flags.rawValue & Hotkey.modifierMask

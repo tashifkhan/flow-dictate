@@ -598,6 +598,47 @@ enum SelfCheck {
         expect(Hotkey.modifierOnly(keyCode: 0) == nil, "a letter is not a modifier")
         expect(Hotkey.modifierOnly(keyCode: 63) == Hotkey.fn, "keycode 63 resolves to fn")
 
+        let chord = Hotkey.modifiers(keyCode: kVK_Control,
+                                     flags: [.maskControl, .maskShift, .maskAlternate, .maskNonCoalesced])
+        expect(chord?.isChord == true, "several modifiers held together make a chord")
+        expect(chord?.label == "⌃⌥⇧", "a chord reads as its symbols")
+        expect((chord?.modifiers ?? 0) & ~Hotkey.modifierMask == 0, "a chord masks off stray flags")
+        expect(Hotkey.modifiers(keyCode: kVK_RightOption, flags: .maskAlternate) == .rightOption,
+               "one held modifier keeps its side")
+        expect(Hotkey.modifiers(keyCode: kVK_Control, flags: []) == nil, "no modifiers, no hotkey")
+
+        if let chord {
+            let chordMonitor = HotkeyMonitor()
+            chordMonitor.dispatchAction = { $0() }
+            var presses = 0
+            var releases = 0
+            // Toggle mode reports only the press edge, so count either kind of start.
+            let holds = Settings.shared.activation == .hold
+            chordMonitor.onPress = { presses += 1 }
+            chordMonitor.onToggle = { presses += 1 }
+            chordMonitor.onRelease = { releases += 1 }
+            func flagsChanged(_ code: Int, _ flags: CGEventFlags) {
+                guard let event = CGEvent(keyboardEventSource: nil,
+                                          virtualKey: CGKeyCode(code), keyDown: true) else { return }
+                event.flags = flags
+                _ = chordMonitor.handle(type: .flagsChanged, event: event, hotkey: chord)
+            }
+            flagsChanged(kVK_Control, .maskControl)
+            flagsChanged(kVK_Shift, [.maskControl, .maskShift])
+            expect(presses == 0, "a partial chord does not start dictation")
+            flagsChanged(kVK_Option, [.maskControl, .maskShift, .maskAlternate])
+            expect(presses == 1, "the full chord starts dictation")
+            flagsChanged(kVK_Shift, [.maskControl, .maskAlternate])
+            expect(releases == (holds ? 1 : 0), "lifting any chord key ends it")
+            flagsChanged(kVK_Shift, [.maskControl, .maskShift, .maskAlternate])
+            flagsChanged(kVK_Command, [.maskControl, .maskShift, .maskAlternate, .maskCommand])
+            expect(presses == 2 && releases == (holds ? 1 : 0), "an extra modifier mid-dictation keeps it going")
+            flagsChanged(kVK_Command, [])
+            flagsChanged(kVK_Command, .maskCommand)
+            flagsChanged(kVK_Control, [.maskCommand, .maskControl, .maskShift, .maskAlternate])
+            expect(presses == 2, "a wider shortcut does not fire the chord")
+        }
+
         // MARK: Statistics
 
         section("statistics")
