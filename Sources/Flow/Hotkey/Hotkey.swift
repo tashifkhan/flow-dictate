@@ -5,8 +5,8 @@ import Foundation
 /// The key you hold to talk.
 ///
 /// Two shapes, because push-to-talk wants both. A *modifier-only* hotkey (hold fn, or
-/// right ⌥) is the nicest to hold down and cannot collide with typing. A *combo*
-/// (⌃⌥ + Space) is there when every modifier is already spoken for.
+/// right ⌥, or a chord like ⌃⇧⌥) is the nicest to hold down and cannot collide with
+/// typing. A *combo* (⌃⌥ + Space) is there when every modifier is already spoken for.
 struct Hotkey: Codable, Equatable, Sendable, Hashable {
     var keyCode: Int
     /// `CGEventFlags` raw value, masked to the device-independent modifier bits.
@@ -22,6 +22,10 @@ struct Hotkey: Codable, Equatable, Sendable, Hashable {
         | CGEventFlags.maskSecondaryFn.rawValue
 
     var flags: CGEventFlags { CGEventFlags(rawValue: modifiers & Self.modifierMask) }
+
+    /// Several modifiers held together, such as ⌃⇧⌥. A chord matches on flags alone, so
+    /// either side's key counts, and `keyCode` is only the first key that went down.
+    var isChord: Bool { isModifierOnly && (modifiers & Self.modifierMask).nonzeroBitCount > 1 }
 
     // MARK: - Presets
 
@@ -64,6 +68,14 @@ struct Hotkey: Codable, Equatable, Sendable, Hashable {
         return Hotkey(keyCode: keyCode, modifiers: flag.rawValue, isModifierOnly: true)
     }
 
+    /// Modifiers held together with no other key. One modifier stays side-specific.
+    static func modifiers(keyCode: Int, flags: CGEventFlags) -> Hotkey? {
+        let held = flags.rawValue & modifierMask
+        guard held != 0 else { return nil }
+        if held.nonzeroBitCount == 1 { return modifierOnly(keyCode: keyCode) }
+        return Hotkey(keyCode: keyCode, modifiers: held, isModifierOnly: true)
+    }
+
     /// A regular key plus whatever modifiers were held with it.
     static func combo(keyCode: Int, flags: CGEventFlags) -> Hotkey {
         Hotkey(keyCode: keyCode, modifiers: flags.rawValue & modifierMask, isModifierOnly: false)
@@ -83,6 +95,7 @@ struct Hotkey: Codable, Equatable, Sendable, Hashable {
     // MARK: - Display
 
     var label: String {
+        if isChord { return Self.modifierSymbols(flags).trimmingCharacters(in: .whitespaces) }
         if isModifierOnly { return Self.modifierName(keyCode) }
         return Self.modifierSymbols(flags) + Self.keyName(keyCode)
     }
@@ -102,7 +115,7 @@ struct Hotkey: Codable, Equatable, Sendable, Hashable {
         }
     }
 
-    private static func modifierSymbols(_ flags: CGEventFlags) -> String {
+    static func modifierSymbols(_ flags: CGEventFlags) -> String {
         var out = ""
         if flags.contains(.maskSecondaryFn) { out += "fn " }
         if flags.contains(.maskControl) { out += "⌃" }
