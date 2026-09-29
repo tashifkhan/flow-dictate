@@ -25,6 +25,13 @@ final class AudioCapture: @unchecked Sendable {
     private var samplePosition = 0.0
     private var recordingTruncated = false
 
+    /// Serialises engine start, restart, and stop. Separate from `lock` because
+    /// removing a tap waits for an in-flight callback, and that callback takes `lock`.
+    private let engineLock = NSLock()
+    private var capturing = false
+    private var preferredInputUID = ""
+    private var configObserver: NSObjectProtocol?
+
     /// Roughly 60 s at 48 kHz. A dictation that outruns the model loading is already
     /// pathological; past this the oldest audio is dropped rather than the memory.
     private static let maxBacklogFrames: AVAudioFrameCount = 48_000 * 60
@@ -63,6 +70,9 @@ final class AudioCapture: @unchecked Sendable {
             log.notice("chosen input device is not attached; using the system default")
             return
         }
+        // Switching to the device the unit already uses still posts a configuration
+        // change, and that change stops the engine a few milliseconds after it starts.
+        guard input.auAudioUnit.deviceID != device.id else { return }
         do {
             try input.auAudioUnit.setDeviceID(device.id)
         } catch {
@@ -92,6 +102,33 @@ final class AudioCapture: @unchecked Sendable {
     /// `preferredInputUID` is read on the main actor by the caller and passed in. This
     /// runs off the main actor, so it must not touch `Settings` itself.
     func startCapturing(preferredInputUID: String) throws {
+        // A device switch, a sample-rate change, or an unplugged mic stops the engine
+        // and posts this. Without a restart the tap goes quiet for the rest of the take.
+        // Registered first so a change during start is not missed; the handler waits on
+        // `engineLock` until `capturing` is set.
+        configObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: nil
+        ) { [weak self] _ in
+            self?.restartAfterConfigurationChange()
+        }
+
+        do {
+            try engineLock.withLock {
+                self.preferredInputUID = preferredInputUID
+                try startEngine()
+                capturing = true
+            }
+        } catch {
+            if let configObserver { NotificationCenter.default.removeObserver(configObserver) }
+            configObserver = nil
+            throw error
+        }
+    }
+
+    /// Caller holds `engineLock`.
+    private func startEngine() throws {
         let input = engine.inputNode
         // Must happen before the format is read: pointing the unit at a different device
         // changes the format it reports, and the converter is built from that.
@@ -117,6 +154,19 @@ final class AudioCapture: @unchecked Sendable {
         }
     }
 
+    private func restartAfterConfigurationChange() {
+        engineLock.withLock {
+            guard capturing, !engine.isRunning else { return }
+            log.notice("audio configuration changed; restarting the microphone")
+            engine.inputNode.removeTap(onBus: 0)
+            do {
+                try startEngine()
+            } catch {
+                log.error("could not restart the microphone: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
+
     /// Hands the analyzer its input, replaying whatever was said while it was loading.
     func attach(analyzerFormat format: AVAudioFormat) throws -> AsyncStream<AnalyzerInput> {
         guard let inputFormat = lock.withLock({ self.inputFormat }) else {
@@ -139,6 +189,7 @@ final class AudioCapture: @unchecked Sendable {
             self.continuation = continuation
 
             for buffer in backlog {
+                guard let converter = converterMatching(buffer.format) else { continue }
                 if let converted = convert(buffer, using: converter, to: format) {
                     continuation.yield(AnalyzerInput(buffer: converted))
                 }
@@ -156,7 +207,8 @@ final class AudioCapture: @unchecked Sendable {
     /// analyzer is attached, and holds onto the audio until then.
     private func consume(_ buffer: AVAudioPCMBuffer) {
         lock.withLock {
-            if let converter, let analyzerFormat, let continuation {
+            if let analyzerFormat, let continuation {
+                guard let converter = converterMatching(buffer.format) else { return }
                 if let converted = convert(buffer, using: converter, to: analyzerFormat) {
                     continuation.yield(AnalyzerInput(buffer: converted))
                 }
@@ -167,6 +219,19 @@ final class AudioCapture: @unchecked Sendable {
             backlog.append(copy)
             backlogFrames += copy.frameLength
         }
+    }
+
+    /// Caller holds `lock`. A restart can land on a device with a different format, so
+    /// the converter is rebuilt whenever the input format stops matching it.
+    private func converterMatching(_ format: AVAudioFormat) -> AVAudioConverter? {
+        if let converter, converter.inputFormat == format { return converter }
+        guard let analyzerFormat, let rebuilt = AVAudioConverter(from: format, to: analyzerFormat) else {
+            log.error("no converter for input format \(format, privacy: .public)")
+            return nil
+        }
+        rebuilt.primeMethod = .none
+        converter = rebuilt
+        return rebuilt
     }
 
     private static func copy(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
@@ -185,9 +250,15 @@ final class AudioCapture: @unchecked Sendable {
     /// Stops the tap the moment the key goes up. An app that keeps the mic dot lit
     /// while idle is malware behaviour, even when it is not.
     func stop() {
-        if engine.isRunning {
+        if let configObserver {
+            NotificationCenter.default.removeObserver(configObserver)
+            self.configObserver = nil
+        }
+        engineLock.withLock {
+            capturing = false
+            // The tap outlives a configuration-change stop, so remove it either way.
             engine.inputNode.removeTap(onBus: 0)
-            engine.stop()
+            if engine.isRunning { engine.stop() }
         }
         // The tap is gone, so nothing else is touching the meter now.
         levelMeter = AudioLevelMeter()
