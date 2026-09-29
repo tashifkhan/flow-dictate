@@ -551,6 +551,7 @@ enum SelfCheck {
         }
 
         do {
+            let existingWords = lexicon.words
             let added = lexicon.addWords("Cloudflare, Wrangler\nDurable Objects;Hyperdrive\tR2")
             expect(added == 5, "a mixed-separator paste splits into five words")
             expect(lexicon.contains("Durable Objects"),
@@ -559,12 +560,12 @@ enum SelfCheck {
                    "a duplicate is refused case-insensitively")
             expect(lexicon.addWords("  \n , ; ") == 0,
                    "separators alone add nothing")
-            expect(lexicon.exportedWords.split(separator: "\n").count == 5,
+            expect(lexicon.exportedWords.split(separator: "\n").count == existingWords.count + 5,
                    "export writes one word per line")
             for word in ["Cloudflare", "Wrangler", "Durable Objects", "Hyperdrive", "R2"] {
                 lexicon.removeWord(word)
             }
-            expect(lexicon.exportedWords.isEmpty, "and removal empties it again")
+            expect(lexicon.words == existingWords, "and removal restores the earlier words")
         }
 
         // MARK: Decisions
