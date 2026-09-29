@@ -60,6 +60,7 @@ final class DictationController {
                     watchRecordingLimit()
                 }
             } else {
+                if phase != .processing, processingDetail != nil { processingDetail = nil }
                 if recordingStartedAt != nil { recordingStartedAt = nil }
                 if phase == .idle, limitNotice != nil { limitNotice = nil }
             }
@@ -79,6 +80,12 @@ final class DictationController {
     private(set) var lastTestTranscript: String?
     /// The live transcript, volatile tail included. Shown, never inserted.
     private(set) var transcript = ""
+    /// Every usable answer for the last dictation, inserted one first. Parallel
+    /// routes keep adding to it after insertion; the menu bar offers a swap.
+    private(set) var results: [CloudResult] = []
+    private(set) var insertedResultID: UUID?
+    /// Which model is working right now, for the panel.
+    private(set) var processingDetail: String?
     private(set) var cleanupAvailability: CleanupAvailability = .unknown
     /// Which transcriber is actually in use, for the settings window.
     private(set) var transcriberLabel = "resolving…"
@@ -92,12 +99,16 @@ final class DictationController {
 
     private let pipeline = SpeechPipeline()
     private let cleanup = CleanupService()
+    private let cloud = CloudService()
     private let inserter = Inserter()
     private let library: Library
     private let lexicon: Lexicon
     private let log = Logger(subsystem: "sh.taf.flow", category: "dictation")
 
     private var startedAt: Date?
+    private var cloudSettings = CloudSettings()
+    /// Tags parallel results so a slow model cannot attach to the next dictation.
+    @ObservationIgnored private var resultsToken = UUID()
     private var run: Task<Void, Never>?
     @ObservationIgnored private var limitTask: Task<Void, Never>?
     /// Open spoken lists, per place. Forgotten after 15 minutes.
@@ -300,6 +311,11 @@ final class DictationController {
         }
 
         transcript = ""
+        results = []
+        insertedResultID = nil
+        processingDetail = nil
+        resultsToken = UUID()
+        cloudSettings = Settings.shared.cloud
         levels.reset()
         startedAt = .now
         phase = .preparing(nil)
@@ -309,6 +325,9 @@ final class DictationController {
         let vocabulary = Array(Set(lexicon.words + targetApp.recognitionHints)).sorted()
         // Resolved above, on the main actor; the pipeline runs off it.
         let inputDeviceUID = input.uid
+        // With cloud audio routes ready, a broken local transcriber is not fatal.
+        let allowLocalFailure = cloudSettings.sendsAudio && NetworkStatus.shared.isOnline
+        let recordAudio = cloudSettings.sendsAudio
         run = Task { [pipeline, levels] in
             guard await AudioCapture.requestMicAccess() else {
                 self.fail(AudioCapture.CaptureError.micDenied.localizedDescription)
@@ -318,6 +337,8 @@ final class DictationController {
                 try await pipeline.start(
                     vocabulary: vocabulary,
                     inputDeviceUID: inputDeviceUID,
+                    allowLocalFailure: allowLocalFailure,
+                    recordAudio: recordAudio,
                     onLevel: { level in
                         Task { @MainActor in levels.push(level) }
                     },
@@ -362,19 +383,43 @@ final class DictationController {
         let destination: DictationTarget? = isTesting ? nil : target
         let previous = run
 
-        run = Task { [pipeline, cleanup, inserter, library, lexicon] in
+        let cloudSettings = self.cloudSettings
+        run = Task { [pipeline, cleanup, cloud, inserter, library, lexicon] in
             // Let start() finish before finalizing, or we finalize a dictation that
             // never began.
             _ = await previous?.result
 
-            let raw: String
+            let localRaw: String
             do {
-                raw = try await pipeline.finish()
+                localRaw = try await pipeline.finish()
             } catch {
                 self.fail(error.localizedDescription)
                 return
             }
 
+            let token = UUID()
+            self.resultsToken = token
+            let refineEnabled = Settings.shared.cleanupEnabled
+            let job = CloudService.Job(
+                audio: await pipeline.recordedAudio, localRaw: localRaw, refine: refineEnabled,
+                language: Settings.shared.transcriptionLanguage, parallel: cloudSettings.parallelResults)
+            // The cloud ladder, top to bottom. This Mac is the rung after the last.
+            let outcome = await cloud.run(
+                cloudSettings.readyRungs, job: job,
+                makeContext: { raw in await MainActor.run { self.cleanupContext(raw: raw, app: app, lexicon: lexicon) } },
+                progress: { detail in
+                    Task { @MainActor in if self.phase == .processing { self.processingDetail = detail } }
+                },
+                late: { result in
+                    Task { @MainActor in self.addLateResult(result, token: token) }
+                })
+            // Escape while the cloud was working. cancel() has already reset the panel;
+            // the answer must not land anyway.
+            guard !Task.isCancelled else { return }
+            let raw = outcome?.raw ?? localRaw
+            if cloudSettings.parallelResults, !localRaw.isEmpty, outcome != nil, outcome?.raw != localRaw {
+                self.results.append(CloudResult(label: "This Mac, unrefined", text: localRaw))
+            }
             guard !raw.isEmpty else {
                 // Distinguish "the mic gave us nothing" from "you did not say anything".
                 if self.levels.peak <= 0.001 {
@@ -410,7 +455,19 @@ final class DictationController {
                 composed = result
                 decision = .raw(result.insertion)
             } else {
-                decision = await self.cleanedDecision(raw: raw, app: app, cleanup: cleanup, lexicon: lexicon)
+                if let text = outcome?.text {
+                    decision = .raw(text)
+                } else {
+                    if outcome == nil && cloudSettings.usesCloud { self.processingDetail = "Using this Mac" }
+                    decision = await self.cleanedDecision(raw: raw, app: app, cleanup: cleanup, lexicon: lexicon)
+                }
+                if cloudSettings.parallelResults, decision.mode == .insert {
+                    let label = outcome.map { $0.text == nil ? $0.label + ", refined on this Mac" : $0.label } ?? "This Mac"
+                    let pasted = CloudResult(label: label, text: decision.text)
+                    self.results.removeAll { $0.text == pasted.text }
+                    self.results.insert(pasted, at: 0)
+                    self.insertedResultID = pasted.id
+                }
                 // Prose right after "end list" still starts its own paragraph.
                 if let openList, decision.mode == .insert || decision.mode == .format {
                     let result = DictationComposer.compose(formatted.replacingText(decision.text), previous: openList)
@@ -419,6 +476,7 @@ final class DictationController {
                 }
             }
 
+            guard !Task.isCancelled else { return }
             guard let destination else {
                 let text = decision.text.trimmingCharacters(in: .whitespacesAndNewlines)
                 self.continuations.remember(Self.worthKeeping(composed?.continuation), for: anchor, now: Self.uptime)
@@ -443,6 +501,7 @@ final class DictationController {
             do {
                 // Let the hotkey's modifiers come up, so a keystroke paste is plain ⌘V.
                 await inserter.waitForModifierRelease()
+                guard !Task.isCancelled else { return }
                 // Focus may have changed during recognition or cleanup. Decide whether
                 // to insert or copy using the field active now.
                 let current = FrontApp.current()
@@ -486,8 +545,12 @@ final class DictationController {
         guard await MainActor.run(body: { Settings.shared.cleanupEnabled }) else {
             return .raw(raw)
         }
-        let context = await MainActor.run {
-            CleanupContext(
+        let context = cleanupContext(raw: raw, app: app, lexicon: lexicon)
+        return await cleanup.clean(raw, context: context)
+    }
+
+    private func cleanupContext(raw: String, app: FrontApp, lexicon: Lexicon) -> CleanupContext {
+        CleanupContext(
                 appName: app.destinationName,
                 bundleID: app.bundleID,
                 axRole: app.axRole,
@@ -497,9 +560,7 @@ final class DictationController {
                 vocabulary: Array(Set(lexicon.matches(in: raw) + app.recognitionHints)).sorted(),
                 corrections: lexicon.recent.map { (said: $0.from, meant: $0.to) },
                 lastInsert: self.inserter.lastInsert
-            )
-        }
-        return await cleanup.clean(raw, context: context)
+        )
     }
 
     private func finish(
@@ -529,6 +590,47 @@ final class DictationController {
         }
         // "Check insertion" has to stay up long enough to read.
         dismissAfterBeat(confirmed ? .milliseconds(700) : .seconds(3))
+    }
+
+    private func addLateResult(_ result: CloudResult, token: UUID) {
+        guard token == resultsToken, !results.contains(where: { $0.text == result.text }) else { return }
+        // Keep the local fallback rows last; they are the least likely pick.
+        let index = results.firstIndex { $0.label.hasPrefix("This Mac") } ?? results.endIndex
+        results.insert(result, at: index)
+    }
+
+    /// Swap the last dictation for another model's result. Only when the inserted text
+    /// still sits right before the caret; otherwise the result goes to the clipboard and
+    /// nothing is deleted. You may have typed since, and Delete would eat that.
+    func useResult(_ id: UUID) {
+        guard let result = results.first(where: { $0.id == id }), !phase.isBusy else { return }
+        Task { [inserter] in
+            // The menu bar window can hold the keyboard for a beat after the click.
+            var app = FrontApp.current()
+            for _ in 0..<6 where !inserter.lastInsertSitsAtCaret(in: app) {
+                try? await Task.sleep(for: .milliseconds(50))
+                app = FrontApp.current()
+            }
+            guard inserter.lastInsertSitsAtCaret(in: app) else {
+                inserter.keepOnClipboard(result.text)
+                phase = .copied(result.text)
+                dismissAfterBeat()
+                return
+            }
+            await inserter.waitForModifierRelease()
+            do {
+                let decision = Decision(mode: .replace, text: result.text, target: inserter.lastInsert)
+                let delivery = try inserter.apply(decision, in: app)
+                insertedResultID = id
+                switch delivery.destination {
+                case .textField: phase = .inserted(result.text)
+                case .clipboard: phase = .copied(result.text)
+                }
+                dismissAfterBeat()
+            } catch {
+                fail(error.localizedDescription)
+            }
+        }
     }
 
     /// Escape, or a dictation you thought better of.
