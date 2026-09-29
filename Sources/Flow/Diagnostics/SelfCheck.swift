@@ -733,6 +733,91 @@ enum SelfCheck {
         expect(TranscriberKind.speech.label == "SpeechTranscriber", "the primary transcriber names itself")
         expect(TranscriberKind.customized.label.contains("custom"), "the customised kind says so")
 
+        section("cloud config ladder")
+        do {
+            var config = CloudSettings()
+            var openAI = CloudProvider(api: .openAI, name: "My endpoint")
+            openAI.enabled = true
+            openAI.apiKey = "test-secret"
+            var claude = CloudProvider(api: .anthropic, name: "Claude")
+            claude.enabled = true
+            claude.apiKey = "another-secret"
+            config.providers = [openAI, claude]
+            let audio = CloudModel(providerID: openAI.id, name: "Direct", modelID: "gpt-audio", reasoning: .low)
+            let whisper = CloudModel(providerID: openAI.id, name: "", modelID: "gpt-4o-transcribe")
+            let writer = CloudModel(providerID: claude.id, name: "", modelID: "claude-sonnet-5-5")
+            config.models = [audio, whisper, writer]
+            config.configs = [
+                CloudConfig(kind: .onePass, model: audio.id),
+                CloudConfig(kind: .twoPass, transcriber: whisper.id, refiner: writer.id),
+                CloudConfig(kind: .twoPass, transcriber: nil, refiner: writer.id),
+                CloudConfig(kind: .twoPass, transcriber: whisper.id, refiner: nil),
+            ]
+            expect(config.readyRungs.isEmpty, "with the cloud off, only this Mac runs")
+            config.useCloud = true
+            expect(config.readyRungs.map(\.label) == [
+                "My endpoint · Direct",
+                "My endpoint · gpt-4o-transcribe → Claude · claude-sonnet-5-5",
+                "This Mac → Claude · claude-sonnet-5-5",
+                "My endpoint · gpt-4o-transcribe → This Mac",
+            ], "configs run in ladder order, and either 2-pass step can be this Mac")
+            expect(config.readyRungs[2].sendsAudio == false, "a local transcriber keeps the audio on this Mac")
+            if case .onePass(let route) = config.readyRungs[0].step {
+                expect(route.model.reasoning == .low, "1-pass configs keep their model's reasoning level")
+            }
+            expect((try? config.rung(CloudConfig(kind: .onePass, model: writer.id)).get()) == nil,
+                   "an Anthropic model cannot take a 1-pass config")
+            expect((try? config.rung(CloudConfig(kind: .twoPass)).get()) == nil,
+                   "a 2-pass config needs at least one cloud step")
+            config.providers[1].apiKey = ""
+            expect(config.readyRungs.count == 2, "configs whose provider lacks a key drop out of the ladder")
+            config.providers[1].apiKey = "another-secret"
+            var payload: [String: Any] = [:]
+            CloudService.applyReasoning(CloudModel(providerID: claude.id, name: "", modelID: "x", reasoning: .off),
+                                        api: .anthropic, to: &payload)
+            expect(payload["thinking"] == nil && (payload["output_config"] as? [String: String])?["effort"] == "low",
+                   "minimal reasoning on Claude lowers effort instead of disabling thinking")
+            let encoded = try? JSONEncoder().encode(config)
+            expect(encoded.flatMap { String(data: $0, encoding: .utf8) }.map {
+                !$0.contains("test-secret") && !$0.contains("another-secret")
+            } == true, "provider keys stay out of saved settings")
+            let decoded = encoded.flatMap { try? JSONDecoder().decode(CloudSettings.self, from: $0) }
+            expect(decoded?.configs.map(\.id) == config.configs.map(\.id) && decoded?.useCloud == true,
+                   "the ladder survives relaunch")
+
+            // Settings saved by the per-step ladders turn into configs.
+            let old: [String: Any] = [
+                "providers": (try? JSONSerialization.jsonObject(with: JSONEncoder().encode(config.providers))) ?? [],
+                "models": (try? JSONSerialization.jsonObject(with: JSONEncoder().encode(config.models))) ?? [],
+                "transcriber": "cloud", "refiner": "cloud", "onePassFirst": true,
+                "onePassRoutes": [audio.id.uuidString],
+                "transcriptionRoutes": [whisper.id.uuidString],
+                "refinementRoutes": [writer.id.uuidString],
+                "parallelResults": false,
+            ]
+            var migrated = (try? JSONSerialization.data(withJSONObject: old))
+                .flatMap { try? JSONDecoder().decode(CloudSettings.self, from: $0) }
+            // Keys live in the Keychain, never in the saved JSON.
+            for index in migrated?.providers.indices ?? 0..<0 { migrated?.providers[index].apiKey = "key" }
+            expect(migrated?.readyRungs.map(\.label) == [
+                "My endpoint · Direct", "My endpoint · gpt-4o-transcribe → Claude · claude-sonnet-5-5",
+            ], "per-step ladders become a 1-pass config then a 2-pass config")
+            var local = old
+            local["transcriber"] = "local"
+            local["refiner"] = "local"
+            local["onePassFirst"] = false
+            let stayed = (try? JSONSerialization.data(withJSONObject: local))
+                .flatMap { try? JSONDecoder().decode(CloudSettings.self, from: $0) }
+            expect(stayed?.useCloud == false, "settings that stayed on this Mac still do")
+
+            config.removeModel(writer.id)
+            expect(config.configs.count == 3 && config.configs[1].refiner == nil,
+                   "deleting a model hands its step to this Mac and drops configs left empty")
+            config.removeProvider(openAI.id)
+            expect(config.configs.isEmpty && config.models.isEmpty,
+                   "removing a provider removes its models and the configs that used them")
+        }
+
         // MARK: Availability copy
 
         section("availability")
