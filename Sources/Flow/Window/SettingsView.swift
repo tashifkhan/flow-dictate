@@ -5,7 +5,7 @@ import SwiftUI
 /// One pane of Settings. Named so the main window's sidebar can address them
 /// individually instead of duplicating the controls.
 enum SettingsPane: String, CaseIterable, Hashable, Identifiable {
-    case general, microphone, vocabulary, api, privacy
+    case general, microphone, models, vocabulary, api, privacy
 
     var id: String { rawValue }
 
@@ -13,6 +13,7 @@ enum SettingsPane: String, CaseIterable, Hashable, Identifiable {
         switch self {
         case .general: "General"
         case .microphone: "Microphone"
+        case .models: "Models"
         case .vocabulary: "Vocabulary"
         case .api: "API"
         case .privacy: "Privacy"
@@ -23,6 +24,7 @@ enum SettingsPane: String, CaseIterable, Hashable, Identifiable {
         switch self {
         case .general: "gearshape"
         case .microphone: "mic"
+        case .models: "cpu"
         case .vocabulary: "character.book.closed"
         case .api: "terminal"
         case .privacy: "hand.raised"
@@ -55,11 +57,12 @@ struct SettingsView: View {
             TabView {
                 general.tabItem { Label("General", systemImage: "gearshape") }
                 MicrophoneSettingsView(env: env).tabItem { Label("Microphone", systemImage: "mic") }
+                CloudSettingsView().tabItem { Label("Models", systemImage: "cpu") }
                 api.tabItem { Label("API", systemImage: "terminal") }
                 vocabulary.tabItem { Label("Vocabulary", systemImage: "character.book.closed") }
                 privacy.tabItem { Label("Privacy", systemImage: "hand.raised") }
             }
-            .frame(width: 480, height: 400)
+            .frame(width: 560, height: 500)
         }
     }
 
@@ -68,6 +71,7 @@ struct SettingsView: View {
         switch pane {
         case .general: general
         case .microphone: MicrophoneSettingsView(env: env)
+        case .models: CloudSettingsView()
         case .vocabulary: vocabulary
         case .api: api
         case .privacy: privacy
@@ -139,7 +143,7 @@ struct SettingsView: View {
             }
 
             Section("Text") {
-                Toggle("Clean up with Apple Intelligence", isOn: $settings.cleanupEnabled)
+                Toggle("Refine dictated text", isOn: $settings.cleanupEnabled)
                 Text(env.controller.cleanupAvailability.label)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -429,8 +433,14 @@ struct SettingsView: View {
             Section("On this Mac") {
                 LabeledContent("Transcription", value: env.controller.transcriberLabel)
                 LabeledContent("Cleanup", value: env.controller.cleanupAvailability.label)
-                LabeledContent("Network", value: "Model download only")
-                Text("Audio never leaves this Mac. Flow makes no network calls at dictation time.")
+                let hasCloudRoute = settings.cloud.usesCloud
+                LabeledContent("Network", value: hasCloudRoute ? "Cloud models selected" : "Model download only")
+                Text((settings.cloud.sendsAudio
+                      ? "Recorded audio goes to the cloud models on the Models page."
+                      : "Audio stays on this Mac during dictation.")
+                     + (settings.cloud.refinesInCloud && !settings.cloud.sendsAudio
+                        ? " Transcript text goes to your refinement models." : "")
+                     + (hasCloudRoute ? " When they fail or you are offline, Flow uses the on-device models." : ""))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

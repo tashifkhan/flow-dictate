@@ -39,6 +39,9 @@ struct MainWindow: View {
         .onChange(of: env.openNoteID) { _, id in
             if let id { selection = .note(id) }
         }
+        .onChange(of: env.openSettingsPane) { _, pane in
+            if let pane { selection = .settings(pane) }
+        }
         .onChange(of: mode) { _, new in storedMode = new.rawValue }
     }
 
@@ -51,6 +54,10 @@ struct MainWindow: View {
     private func configure() {
         mode = ViewMode(rawValue: storedMode) ?? .list
         env.refreshPermissionState()
+        if let pane = env.openSettingsPane {
+            selection = .settings(pane)
+            return
+        }
 
         // Nothing else in the app matters until Flow can hear you and type for you.
         if env.needsSetup {
@@ -176,6 +183,13 @@ struct MainWindow: View {
 
     // MARK: - Toolbar
 
+    private var showsBrowserLayoutPicker: Bool {
+        switch selection {
+        case .dictations, .pinned, .notes: true
+        default: false
+        }
+    }
+
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
         ToolbarItem(placement: .navigation) {
@@ -186,13 +200,15 @@ struct MainWindow: View {
             }
             .help("Show or hide the sidebar")
         }
-        ToolbarItem(placement: .primaryAction) {
-            Picker("View", selection: $mode) {
-                Image(systemName: "list.bullet").tag(ViewMode.list)
-                Image(systemName: "square.grid.2x2").tag(ViewMode.grid)
+        if showsBrowserLayoutPicker {
+            ToolbarItem(placement: .primaryAction) {
+                Picker("View", selection: $mode) {
+                    Image(systemName: "list.bullet").tag(ViewMode.list)
+                    Image(systemName: "square.grid.2x2").tag(ViewMode.grid)
+                }
+                .pickerStyle(.segmented)
+                .help("List or grid")
             }
-            .pickerStyle(.segmented)
-            .help("List or grid")
         }
         ToolbarItem(placement: .primaryAction) {
             Button {
