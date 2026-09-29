@@ -9,12 +9,14 @@ struct MenuBarView: View {
     /// replaced is private, was renamed once already, and fails silently when it stops
     /// matching — which looks exactly like the menu item doing nothing.
     @Environment(\.openSettings) private var openSettings
+    @State private var settings = Settings.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
             Divider()
             problems
+            results
             recent
             Divider()
             footer
@@ -49,8 +51,21 @@ struct MenuBarView: View {
                 Waveform(levels: env.controller.levels.bars, height: 20)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
+
+            engines
         }
         .padding(12)
+    }
+
+    /// Where the next dictation runs. Takes effect on the next recording; one already
+    /// running keeps the settings it started with.
+    private var engines: some View {
+        Picker("Process on", selection: $settings.cloud.useCloud) {
+            Text("This Mac").tag(false)
+            Text("Cloud, then this Mac").tag(true)
+        }
+        .pickerStyle(.segmented)
+        .controlSize(.small)
     }
 
     private var statusLine: String {
@@ -58,7 +73,7 @@ struct MenuBarView: View {
         case .idle: "Hold \(Settings.shared.hotkey.label) to talk"
         case .preparing(let f): f.map { "Downloading model, \(Int($0 * 100))%" } ?? "Getting ready"
         case .recording: "Listening"
-        case .processing: "Cleaning up"
+        case .processing: env.controller.processingDetail ?? "Cleaning up"
         case .inserted: "Inserted"
         case .copied: "Copied to clipboard"
         case .tested: "Microphone test complete"
@@ -81,7 +96,12 @@ struct MenuBarView: View {
                 nag("Microphone access is off, so there is nothing to transcribe.",
                     action: "Open Settings", perform: Permissions.openMicrophoneSettings)
             }
-            if let detail = env.controller.cleanupAvailability.detail {
+            if cloudUnready {
+                nag("No cloud config is ready, so Flow is using this Mac.",
+                    action: "Models", perform: openModels)
+            }
+            if Settings.shared.cleanupEnabled && !Settings.shared.cloud.refinesInCloud,
+               let detail = env.controller.cleanupAvailability.detail {
                 if case .unsupportedLanguage = env.controller.cleanupAvailability {
                     nag(detail, action: "Language settings", perform: Permissions.openLanguageSettings)
                 } else {
@@ -111,7 +131,43 @@ struct MenuBarView: View {
         .background(.orange.opacity(0.12))
     }
 
+    /// Cloud is on, but no config on the ladder can run.
+    private var cloudUnready: Bool {
+        settings.cloud.useCloud && settings.cloud.readyRungs.isEmpty
+    }
+
+    private func openModels() {
+        env.openSettingsPane = .models
+        openWindow(id: FlowApp.mainWindowID)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
     // MARK: - Recent
+
+    /// Parallel models' answers for the last dictation. Clicking one swaps it in.
+    @ViewBuilder
+    private var results: some View {
+        let results = env.controller.results
+        if results.count > 1 {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Last dictation · pick another result")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 12)
+                    .padding(.top, 10)
+                ForEach(results) { result in
+                    ResultRow(result: result,
+                              inserted: result.id == env.controller.insertedResultID,
+                              disabled: env.controller.phase.isBusy) {
+                        env.controller.useResult(result.id)
+                        env.presenter.show()
+                    }
+                }
+            }
+            .padding(.bottom, 6)
+            Divider()
+        }
+    }
 
     /// One row is a two-line title plus a caption; 52 is the honest average of the
     /// one-line and two-line cases.
@@ -246,5 +302,50 @@ private struct MenuBarRow: View {
     private func copy() {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(item.inserted, forType: .string)
+    }
+}
+
+private struct ResultRow: View {
+    var result: CloudResult
+    var inserted: Bool
+    var disabled: Bool
+    var use: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: inserted ? "checkmark.circle.fill" : "circle")
+                .foregroundStyle(inserted ? AnyShapeStyle(.tint) : AnyShapeStyle(.tertiary))
+                .padding(.top, 1)
+            Button(action: use) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(result.label)
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.secondary)
+                    Text(result.text)
+                        .font(.callout)
+                        .lineLimit(3)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(.rect)
+            }
+            .buttonStyle(.plain)
+            .disabled(inserted || disabled)
+            .help(inserted ? "This is the text Flow inserted" : "Replace the inserted text with this result, or copy it if you have typed since")
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(result.text, forType: .string)
+            } label: {
+                Image(systemName: "doc.on.doc").frame(width: 24, height: 24).contentShape(.rect)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .help("Copy to clipboard")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(hovering && !inserted ? AnyShapeStyle(.selection.opacity(0.5)) : AnyShapeStyle(.clear))
+        .onHover { hovering = $0 }
     }
 }

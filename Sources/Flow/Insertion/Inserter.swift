@@ -171,6 +171,34 @@ final class Inserter {
         return false
     }
 
+    /// Whether the text right before the caret is still exactly what Flow last typed,
+    /// in the field that has the keyboard. A later swap backspaces over `lastInsert`,
+    /// and after you have typed or clicked elsewhere those keystrokes would eat your
+    /// own text. Anything unreadable counts as no.
+    func lastInsertSitsAtCaret(in app: FrontApp) -> Bool {
+        guard let last = lastInsert, !last.isEmpty, app.hasTextTarget, !app.isSecure,
+              !app.prefersClipboardPaste, !app.isElectron, app.processID > 0,
+              // Synthetic Delete goes to whoever has the keyboard, which is not always
+              // the app FrontApp resolved (Flow's own menu bar window, say).
+              FrontApp.systemFocus()?.appPID == app.processID,
+              let element = FrontApp.focusedElement(pid: app.processID),
+              let caret = Self.selectedRange(element), caret.length == 0 else { return false }
+        // AX ranges count UTF-16 units.
+        let length = last.utf16.count
+        guard caret.location >= length else { return false }
+        return Self.string(in: element, range: CFRange(location: caret.location - length, length: length)) == last
+    }
+
+    private static func string(in element: AXUIElement, range: CFRange) -> String? {
+        var range = range
+        guard let parameter = AXValueCreate(.cfRange, &range) else { return nil }
+        var value: CFTypeRef?
+        guard AXUIElementCopyParameterizedAttributeValue(
+            element, kAXStringForRangeParameterizedAttribute as CFString, parameter, &value
+        ) == .success else { return nil }
+        return value as? String
+    }
+
     /// A backup for an insert Flow could not confirm. Runs after the paste path has
     /// already put the user's clipboard back.
     func keepOnClipboard(_ text: String) {
