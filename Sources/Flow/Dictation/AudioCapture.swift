@@ -21,6 +21,9 @@ final class AudioCapture: @unchecked Sendable {
     /// Audio captured before the analyzer was ready, oldest first.
     private var backlog: [AVAudioPCMBuffer] = []
     private var backlogFrames: AVAudioFrameCount = 0
+    private var recordedSamples: [Int16] = []
+    private var samplePosition = 0.0
+    private var recordingTruncated = false
 
     /// Roughly 60 s at 48 kHz. A dictation that outruns the model loading is already
     /// pathological; past this the oldest audio is dropped rather than the memory.
@@ -29,7 +32,12 @@ final class AudioCapture: @unchecked Sendable {
     /// Called on the audio thread with a 0...1 amplitude. Keep the work here trivial.
     private let onLevel: @Sendable (Float) -> Void
 
-    init(onLevel: @escaping @Sendable (Float) -> Void) {
+    /// Keep a copy of the audio for cloud models. Off unless a ready cloud config
+    /// takes audio, so a local-only dictation holds nothing beyond the backlog.
+    private let recordsAudio: Bool
+
+    init(recordsAudio: Bool = false, onLevel: @escaping @Sendable (Float) -> Void) {
+        self.recordsAudio = recordsAudio
         self.onLevel = onLevel
     }
 
@@ -96,6 +104,7 @@ final class AudioCapture: @unchecked Sendable {
         input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
             guard let self else { return }
             self.meter(buffer)
+            if self.recordsAudio { self.record(buffer) }
             self.consume(buffer)
         }
 
@@ -192,6 +201,53 @@ final class AudioCapture: @unchecked Sendable {
             inputFormat = nil
             backlog.removeAll()
             backlogFrames = 0
+        }
+    }
+
+    /// Keep a 16 kHz mono copy for cloud transcription. A ten-minute recording is
+    /// roughly 19 MB, below the inline audio limit used by Gemini.
+    private func record(_ buffer: AVAudioPCMBuffer) {
+        guard let channels = buffer.floatChannelData else { return }
+        let count = Int(buffer.frameLength)
+        let channelCount = Int(buffer.format.channelCount)
+        let step = buffer.format.sampleRate / 16_000
+        lock.withLock {
+            while samplePosition < Double(count), recordedSamples.count < 9_600_000 {
+                let frame = min(Int(samplePosition), count - 1)
+                var value: Float = 0
+                for channel in 0..<channelCount { value += channels[channel][frame] }
+                value /= Float(channelCount)
+                recordedSamples.append(Int16(max(-1, min(1, value)) * 32767))
+                samplePosition += step
+            }
+            if recordedSamples.count >= 9_600_000 { recordingTruncated = true }
+            samplePosition -= Double(count)
+        }
+    }
+
+    func recordedWAV() -> Data {
+        lock.withLock {
+            guard !recordingTruncated else { return Data() }
+            let byteCount = recordedSamples.count * 2
+            var data = Data()
+            func append<T: FixedWidthInteger>(_ number: T) {
+                var little = number.littleEndian
+                withUnsafeBytes(of: &little) { data.append(contentsOf: $0) }
+            }
+            data.append(contentsOf: "RIFF".utf8)
+            append(UInt32(byteCount + 36))
+            data.append(contentsOf: "WAVEfmt ".utf8)
+            append(UInt32(16))
+            append(UInt16(1))
+            append(UInt16(1))
+            append(UInt32(16_000))
+            append(UInt32(32_000))
+            append(UInt16(2))
+            append(UInt16(16))
+            data.append(contentsOf: "data".utf8)
+            append(UInt32(byteCount))
+            for sample in recordedSamples { append(sample) }
+            return data
         }
     }
 
