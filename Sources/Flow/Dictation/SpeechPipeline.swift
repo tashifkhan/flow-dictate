@@ -42,6 +42,7 @@ actor SpeechPipeline {
 
     private var finalizedText = ""
     private var volatileText = ""
+    private(set) var recordedAudio = Data()
 
     /// Resolved once, reused after that.
     private var resolvedLocale: Locale?
@@ -170,16 +171,19 @@ actor SpeechPipeline {
     func start(
         vocabulary: [String],
         inputDeviceUID: String,
+        allowLocalFailure: Bool = false,
+        recordAudio: Bool = false,
         onLevel: @escaping @Sendable (Float) -> Void,
         onRecording: @escaping @Sendable () -> Void,
         onUpdate: @escaping @Sendable (TranscriptionUpdate) -> Void
     ) async throws {
         finalizedText = ""
         volatileText = ""
+        recordedAudio = Data()
 
         // 1. Microphone first, before anything that can block. Everything below this
         //    line runs while audio is already being captured and buffered.
-        let capture = AudioCapture(onLevel: onLevel)
+        let capture = AudioCapture(recordsAudio: recordAudio, onLevel: onLevel)
         self.capture = capture
         try capture.startCapturing(preferredInputUID: inputDeviceUID)
         onRecording()
@@ -208,10 +212,12 @@ actor SpeechPipeline {
 
             resultsTask = makeResultsTask(for: module, onUpdate: onUpdate)
         } catch {
-            // The mic is already open at this point; do not leave it that way.
-            capture.stop()
-            self.capture = nil
-            throw error
+            if !allowLocalFailure {
+                capture.stop()
+                self.capture = nil
+                throw error
+            }
+            log.error("local transcriber unavailable, keeping audio for cloud: \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -278,6 +284,7 @@ actor SpeechPipeline {
         }
 
         capture?.stop()
+        recordedAudio = capture?.recordedWAV() ?? Data()
         capture = nil
 
         if let analyzer {
@@ -310,6 +317,7 @@ actor SpeechPipeline {
     func cancel() async {
         capture?.stop()
         capture = nil
+        recordedAudio = Data()
         resultsTask?.cancel()
         resultsTask = nil
         if let analyzer { await analyzer.cancelAndFinishNow() }
