@@ -134,6 +134,51 @@ final class Settings {
     /// Local HTTP API. Off by default; loopback only even when on.
     var apiEnabled: Bool { didSet { defaults.set(apiEnabled, forKey: K.api) } }
     var apiPort: Int { didSet { defaults.set(apiPort, forKey: K.apiPort) } }
+    var cloud: CloudSettings {
+        didSet {
+            for provider in cloud.providers where oldValue.provider(provider.id)?.apiKey != provider.apiKey {
+                pendingKeys[provider.id] = provider.apiKey
+            }
+            for provider in oldValue.providers where cloud.provider(provider.id) == nil {
+                pendingKeys[provider.id] = ""
+            }
+            if !pendingKeys.isEmpty { scheduleKeyFlush() }
+            saveCloud()
+        }
+    }
+
+    /// Key edits wait here until typing pauses. The key field binds straight to
+    /// `cloud`, and each Keychain write is a delete plus an add.
+    @ObservationIgnored private var pendingKeys: [UUID: String] = [:]
+    @ObservationIgnored private var keyFlush: Task<Void, Never>?
+    /// Keys are not in the JSON, so a keystroke in the key field changes nothing here.
+    @ObservationIgnored private var savedCloud: Data?
+
+    private func scheduleKeyFlush() {
+        keyFlush?.cancel()
+        keyFlush = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(600))
+            guard !Task.isCancelled else { return }
+            self?.flushKeys()
+        }
+    }
+
+    /// Writes pending key edits now. Also runs at quit, so a key typed just before
+    /// ⌘Q still lands.
+    func flushKeys() {
+        keyFlush?.cancel()
+        keyFlush = nil
+        for (id, key) in pendingKeys { CloudKeys.write(key, id: id.uuidString) }
+        pendingKeys = [:]
+    }
+
+    private func saveCloud() {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        guard let data = try? encoder.encode(cloud), data != savedCloud else { return }
+        defaults.set(data, forKey: K.cloud)
+        savedCloud = data
+    }
 
     private enum K {
         static let hotkey = "hotkeyV2"
@@ -157,6 +202,8 @@ final class Settings {
         static let customLM = "useCustomLanguageModel"
         static let api = "apiEnabled"
         static let apiPort = "apiPort"
+        static let cloud = "cloudSettingsV2"
+        static let legacyCloud = "cloudSettingsV1"
     }
 
     /// The menu bar stays the primary surface either way; this only adds the dock icon.
@@ -210,5 +257,33 @@ final class Settings {
         useCustomLanguageModel = defaults.bool(forKey: K.customLM)
         apiEnabled = defaults.bool(forKey: K.api)
         apiPort = defaults.integer(forKey: K.apiPort)
+        if let saved = defaults.data(forKey: K.cloud).flatMap({ try? JSONDecoder().decode(CloudSettings.self, from: $0) }) {
+            cloud = saved
+            for index in cloud.providers.indices {
+                cloud.providers[index].apiKey = CloudKeys.read(cloud.providers[index].id.uuidString)
+            }
+            CloudKeys.prune(keeping: cloud.providers.map(\.id.uuidString))
+        } else if let migrated = defaults.data(forKey: K.legacyCloud).flatMap({ CloudSettings.migrated(from: $0) }) {
+            cloud = migrated
+            // didSet does not run in init. Save now, or every launch migrates again
+            // with fresh IDs and leaves the last launch's keys behind in the Keychain.
+            for provider in cloud.providers where !provider.apiKey.isEmpty {
+                CloudKeys.write(provider.apiKey, id: provider.id.uuidString)
+            }
+            saveCloud()
+            defaults.removeObject(forKey: K.legacyCloud)
+            // Drops the old per-vendor keys and any left by earlier migrations.
+            CloudKeys.prune(keeping: cloud.providers.map(\.id.uuidString))
+        } else {
+            // Nothing saved, or saved settings this build cannot read. Leave the
+            // Keychain alone in case a newer build wrote them.
+            cloud = CloudSettings()
+        }
+
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification, object: nil, queue: .main
+        ) { _ in
+            MainActor.assumeIsolated { Settings.shared.flushKeys() }
+        }
     }
 }
