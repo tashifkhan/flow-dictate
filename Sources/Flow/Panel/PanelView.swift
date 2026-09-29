@@ -230,7 +230,7 @@ struct PanelView: View {
         case .idle: "Ready"
         case .preparing: "Starting microphone"
         case .recording: "Listening"
-        case .processing: "Processing"
+        case .processing: controller.processingDetail ?? "Processing"
         case .inserted: "Pasted at your cursor"
         case .copied: "Copied to clipboard"
         case .tested: "Microphone test complete"
@@ -341,7 +341,7 @@ struct PanelView: View {
         case .processing:
             VStack(alignment: .leading, spacing: 8) {
                 Waveform(levels: controller.levels.bars, tint: HUDPalette.muted.opacity(0.4), height: 26)
-                transcriptLine(placeholder: controller.limitNotice ?? "Cleaning up…")
+                transcriptLine(placeholder: controller.limitNotice ?? controller.processingDetail ?? "Cleaning up…")
             }
 
         case .inserted(let text):
