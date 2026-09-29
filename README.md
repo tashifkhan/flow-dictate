@@ -1,8 +1,8 @@
 # Flow
 
-A local-first macOS dictation app inspired by Wispr Flow. Hold a key, speak, release it,
-and Flow transcribes, cleans up, and inserts the text at your cursor using Apple's
-on-device speech and language APIs. No account, API key, or audio upload is required.
+A macOS dictation app inspired by Wispr Flow. Hold a key, speak, release it,
+and Flow transcribes, cleans up, and inserts the text at your cursor. It uses Apple's
+on-device models by default. Cloud models are optional and need your own API keys.
 
 ## Install
 
@@ -127,6 +127,25 @@ granting it, quit and relaunch Flow.** Event taps are only installed at startup.
 
 Optional, off by default: a dock icon, a notification when text lands, and a trained
 custom speech model (Settings › Vocabulary).
+
+### Cloud models
+
+Settings › Models starts with editable OpenAI, Google, and Anthropic provider profiles.
+You can add more providers, give each any name, choose its API format, and set its base
+URL and key. Keys go in macOS Keychain. Add models under each provider and choose
+one-pass audio, transcription, or refinement when you add each one. Model IDs are entered by you; Flow does not preselect
+one. Anthropic's Messages API does not accept audio, so Anthropic-format providers
+work for refinement only.
+
+Choose models in separate fallback lists for all three routes. A one-pass model gets
+audio and the cleanup prompt in one request and returns finished text. If it fails,
+Flow tries transcription and refinement as separate stages, then uses on-device models.
+You can set each model's reasoning level to Model default, Off, Low, Medium, or High.
+The exact level support depends on the model and provider. With parallel results on, Flow runs every selected
+model for a stage and inserts the first successful result in list order. Other results
+appear under "Other results" in the menu bar, where you can copy or insert one. Cloud
+audio routes send recorded audio; cloud refinement sends transcript text and relevant
+vocabulary. Turn off "Refine dictated text" in General to skip refinement.
 
 Voice commands ride the same round trip as ordinary dictation: "scratch that",
 "replace X with Y", "new paragraph".
@@ -340,9 +359,9 @@ nothing" from "no sound reached the microphone" and says which.
 
 ## Known limitations
 
-- **Cleanup depends on Apple Intelligence.** If `SystemLanguageModel.availability`
-  reports that Apple Intelligence is disabled or not ready, Flow inserts raw
-  transcripts and reports the reason in the menu bar and panel.
+- **Local cleanup depends on Apple Intelligence.** If cloud refinement is not
+  configured and `SystemLanguageModel.availability` reports that Apple Intelligence
+  is disabled or not ready, Flow inserts raw transcripts.
 - **Clipboard restore window.** The paste path holds your clipboard for ~600 ms. Copy
   something in exactly that window and you lose it. Acceptable.
 - **Notarization is unexecuted.** `notarytool` and `stapler` are present, but this Mac
