@@ -46,6 +46,7 @@ final class AppEnvironment {
 
     /// Selected in the main window; also where `flowclone://note` lands.
     var openNoteID: UUID?
+    var openSettingsPane: SettingsPane?
     /// Highlighted in the history browser, so ⇧⌘V knows what to re-insert.
     var selectedDictationID: UUID?
 
@@ -234,6 +235,9 @@ final class AppEnvironment {
         case "toggle":
             toggleFromUI()
         case "history":
+            openMainWindow()
+        case "models":
+            openSettingsPane = .models
             openMainWindow()
         case "note":
             let note = library.newNote()
