@@ -136,8 +136,9 @@ final class Settings {
     var apiPort: Int { didSet { defaults.set(apiPort, forKey: K.apiPort) } }
     var cloud: CloudSettings {
         didSet {
-            for provider in cloud.providers where oldValue.provider(provider.id)?.apiKey != provider.apiKey {
+            for provider in cloud.providers where !installingKeys && oldValue.provider(provider.id)?.apiKey != provider.apiKey {
                 pendingKeys[provider.id] = provider.apiKey
+                keyEditGeneration[provider.id, default: 0] += 1
             }
             for provider in oldValue.providers where cloud.provider(provider.id) == nil {
                 pendingKeys[provider.id] = ""
@@ -153,6 +154,34 @@ final class Settings {
     @ObservationIgnored private var keyFlush: Task<Void, Never>?
     /// Keys are not in the JSON, so a keystroke in the key field changes nothing here.
     @ObservationIgnored private var savedCloud: Data?
+    @ObservationIgnored private var installingKeys = false
+    @ObservationIgnored private var keyEditGeneration: [UUID: Int] = [:]
+    @ObservationIgnored private var keyLoad: Task<Void, Never>?
+
+    /// Keychain authorization may wait for a password. Keep it off the UI thread.
+    func loadCloudKeys() async {
+        if let keyLoad { await keyLoad.value; return }
+        let task = Task { [self] in
+            for id in cloud.providers.map(\.id) {
+                guard let provider = cloud.provider(id), provider.apiKey.isEmpty else { continue }
+                let revision = keyEditGeneration[id, default: 0]
+                if let index = cloud.providers.firstIndex(where: { $0.id == id }) {
+                    cloud.providers[index].awaitingKeychainAccess = true
+                }
+                let key = await Task.detached { CloudKeys.read(id.uuidString) }.value
+                guard let index = cloud.providers.firstIndex(where: { $0.id == id }) else { continue }
+                if keyEditGeneration[id, default: 0] == revision {
+                    installingKeys = true
+                    cloud.providers[index].apiKey = key
+                    installingKeys = false
+                }
+                cloud.providers[index].awaitingKeychainAccess = false
+            }
+        }
+        keyLoad = task
+        await task.value
+        keyLoad = nil
+    }
 
     private func scheduleKeyFlush() {
         keyFlush?.cancel()
@@ -259,10 +288,6 @@ final class Settings {
         apiPort = defaults.integer(forKey: K.apiPort)
         if let saved = defaults.data(forKey: K.cloud).flatMap({ try? JSONDecoder().decode(CloudSettings.self, from: $0) }) {
             cloud = saved
-            for index in cloud.providers.indices {
-                cloud.providers[index].apiKey = CloudKeys.read(cloud.providers[index].id.uuidString)
-            }
-            CloudKeys.prune(keeping: cloud.providers.map(\.id.uuidString))
         } else if let migrated = defaults.data(forKey: K.legacyCloud).flatMap({ CloudSettings.migrated(from: $0) }) {
             cloud = migrated
             // didSet does not run in init. Save now, or every launch migrates again
@@ -284,6 +309,10 @@ final class Settings {
             forName: NSApplication.willTerminateNotification, object: nil, queue: .main
         ) { _ in
             MainActor.assumeIsolated { Settings.shared.flushKeys() }
+        }
+        let diagnosticFlags = ["--self-check", "--check-cloud-http", "--probe-focus", "--check-insertion", "--check-cloud-live"]
+        if !diagnosticFlags.contains(where: CommandLine.arguments.contains) {
+            Task { await self.loadCloudKeys() }
         }
     }
 }

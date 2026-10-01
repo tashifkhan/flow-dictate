@@ -142,7 +142,8 @@ struct MainWindow: View {
                 Circle()
                     .fill(env.controller.cleanupAvailability.isAvailable ? .green : .orange)
                     .frame(width: 7, height: 7)
-                Text(env.controller.cleanupAvailability.label)
+                Text(Settings.shared.cloud.useCloud && Settings.shared.cloud.providers.contains(where: \.awaitingKeychainAccess)
+                     ? "Cloud waiting for Keychain · local ready" : env.controller.cleanupAvailability.label)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -192,14 +193,6 @@ struct MainWindow: View {
 
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
-        ToolbarItem(placement: .navigation) {
-            Button {
-                columnVisibility = columnVisibility == .all ? .detailOnly : .all
-            } label: {
-                Label("Sidebar", systemImage: "sidebar.left")
-            }
-            .help("Show or hide the sidebar")
-        }
         if showsBrowserLayoutPicker {
             ToolbarItem(placement: .primaryAction) {
                 Picker("View", selection: $mode) {

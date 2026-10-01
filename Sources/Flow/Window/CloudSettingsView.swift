@@ -31,7 +31,7 @@ struct CloudSettingsView: View {
                     Toggle("Run all configs at the same time", isOn: $settings.cloud.parallelResults)
                 } footer: {
                     Text(settings.cloud.parallelResults
-                         ? "Flow pastes the highest config that succeeds, so config 1 whenever it works. Every other result waits in the menu bar under Last dictation, to copy or swap in. Costs one request per config."
+                         ? "Flow pastes the highest config that succeeds. Other results are saved in history and the Last dictation menu. Each cloud step and retry adds a request. Local cleanup also runs alongside cloud configs."
                          : "Flow runs one config at a time and moves down only when one fails.")
                         .font(.caption)
                 }
@@ -99,7 +99,7 @@ private struct LadderSection: View {
             Text("Cloud ladder, tried top to bottom")
         } footer: {
             VStack(alignment: .leading, spacing: 4) {
-                Text("1 pass sends the audio and cleanup prompt to one model, like Rambler. 2 pass transcribes first, then refines. Either step of a 2-pass config can run on this Mac.")
+                Text("1 pass uses your chosen audio model to produce finished text. 2 pass transcribes first, then sends the transcript to your chosen refiner. Both use Flow's shared cleanup policy. Either step can run on this Mac, and the cloud stages can use different providers.")
                 if !NetworkStatus.shared.isOnline {
                     Label("This Mac is offline. Dictation uses the last rung until it reconnects.", systemImage: "wifi.slash")
                         .foregroundStyle(.orange)
@@ -232,7 +232,7 @@ private struct ConfigEditor: View {
                     .pickerStyle(.segmented)
                 } footer: {
                     Text(kind == .onePass
-                         ? "One audio model hears the recording and returns finished text. Fastest, and closest to Rambler."
+                         ? "One audio model hears the recording and returns finished text using the shared cleanup policy."
                          : "One model transcribes, another refines. Set either step to This Mac to keep it local.")
                         .font(.caption)
                 }
@@ -371,6 +371,11 @@ private struct ProvidersSection: View {
                 Label("Add a provider", systemImage: "plus")
             }
             .buttonStyle(.borderless)
+            Button("Reload saved keys from Keychain") {
+                Task { await settings.loadCloudKeys() }
+            }
+            .buttonStyle(.borderless)
+            .help("Opens macOS authorization if the saved key needs permission. The rest of Flow stays usable.")
         } header: {
             Text("Providers and models")
         } footer: {
@@ -465,6 +470,10 @@ private struct ProviderEditor: View {
             // as you typed rebuilt the field and dropped focus after one keystroke.
             TextField("Base URL", text: provider.baseURL, prompt: Text(provider.wrappedValue.api.defaultBaseURL))
                 .autocorrectionDisabled()
+            TextField("models.dev provider ID", text: provider.pricingProviderID,
+                      prompt: Text("Automatic for known endpoints"))
+                .autocorrectionDisabled()
+                .help("For a proxy, enter its models.dev ID, such as openrouter. Flow uses exact provider and model prices.")
             SecureField("API key", text: provider.apiKey,
                         prompt: Text(provider.wrappedValue.isLocalhost ? "Optional on localhost" : "Required"))
                 .onChange(of: provider.wrappedValue.apiKey) { old, new in
@@ -559,6 +568,7 @@ private struct ModelEditor: View {
     @State private var name: String
     @State private var apiModelID: String
     @State private var reasoning: CloudReasoning
+    @State private var audioInput: CloudAudioInput
     @State private var available: [String] = []
     @State private var loadError: String?
     @State private var loading = false
@@ -574,6 +584,7 @@ private struct ModelEditor: View {
         _name = State(initialValue: model?.name ?? "")
         _apiModelID = State(initialValue: model?.modelID ?? "")
         _reasoning = State(initialValue: model?.reasoning ?? .automatic)
+        _audioInput = State(initialValue: model?.audioInput ?? .transcription)
     }
 
     private var provider: CloudProvider? { settings.cloud.provider(providerID) }
@@ -632,6 +643,13 @@ private struct ModelEditor: View {
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     TextField("Display name", text: $name, prompt: Text("Optional"))
+                    if provider?.api == .openAI {
+                        Picker("Two-pass audio input", selection: $audioInput) {
+                            ForEach(CloudAudioInput.allCases) { input in Text(input.title).tag(input) }
+                        }
+                        Text("Choose the audio API your model supports when it is the transcriber in a two-pass config. One-pass audio always uses multimodal chat. This choice never changes the model ID.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                     Picker("Reasoning", selection: $reasoning) {
                         ForEach(CloudReasoning.allCases) { level in Text(level.title).tag(level) }
                     }
@@ -692,9 +710,11 @@ private struct ModelEditor: View {
             settings.cloud.models[index].name = cleanName
             settings.cloud.models[index].modelID = trimmedID
             settings.cloud.models[index].reasoning = reasoning
+            settings.cloud.models[index].audioInput = audioInput
             id = modelID
         } else {
-            let model = CloudModel(providerID: providerID, name: cleanName, modelID: trimmedID, reasoning: reasoning)
+            var model = CloudModel(providerID: providerID, name: cleanName, modelID: trimmedID, reasoning: reasoning)
+            model.audioInput = audioInput
             settings.cloud.models.append(model)
             id = model.id
         }
