@@ -5,6 +5,7 @@ struct StatsView: View {
     @Bindable var env: AppEnvironment
     @State private var range: StatsRange = .allTime
     @State private var mode: Mode = .overview
+    @State private var activityMetric: ContributionGraph.Metric = .words
 
     enum Mode: String, CaseIterable { case overview, activity }
 
@@ -20,8 +21,13 @@ struct StatsView: View {
                     tiles
                     breakdown
                 } else {
-                    ContributionGraph(stats: stats)
+                    Picker("Activity metric", selection: $activityMetric) {
+                        ForEach(ContributionGraph.Metric.allCases) { Text($0.rawValue).tag($0) }
+                    }.pickerStyle(.segmented)
+                    ContributionGraph(stats: stats, requests: env.library.cloudRequests, metric: activityMetric)
                 }
+                CloudCostSection(requests: (mode == .activity ? StatsRange.year : range).requests(env.library.cloudRequests),
+                                 rangeLabel: mode == .activity ? StatsRange.year.label : range.label)
             }
             .padding(24)
             .frame(maxWidth: 760, alignment: .leading)
