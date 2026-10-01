@@ -2,6 +2,7 @@ import AppKit
 import ApplicationServices
 import Carbon.HIToolbox
 import Foundation
+import SQLite3
 
 /// Verification for the parts that do not need a microphone or a person.
 ///
@@ -289,6 +290,79 @@ enum SelfCheck {
         } catch {
             failures += 1
             print("  FAIL  store threw: \(error)")
+        }
+
+        section("dictation versions")
+        do {
+            let url = URL(fileURLWithPath: NSTemporaryDirectory())
+                .appendingPathComponent("flow-versions-\(UUID().uuidString).sqlite")
+            defer { try? FileManager.default.removeItem(at: url) }
+
+            // Start with the schema installed before versions existed.
+            var legacyDB: OpaquePointer?
+            guard sqlite3_open(url.path, &legacyDB) == SQLITE_OK, let legacyDB else {
+                throw SQLiteStore.StoreError.open("Could not create the legacy fixture")
+            }
+            let schemaResult = sqlite3_exec(legacyDB, """
+                CREATE TABLE dictation (
+                    id TEXT PRIMARY KEY, raw TEXT NOT NULL, cleaned TEXT NOT NULL,
+                    app_bundle_id TEXT NOT NULL, app_name TEXT NOT NULL, created_at REAL NOT NULL,
+                    duration REAL NOT NULL, pinned INTEGER NOT NULL DEFAULT 0, tags TEXT NOT NULL DEFAULT ''
+                );
+                INSERT INTO dictation VALUES ('\(UUID().uuidString)', 'um hello', 'Hello.', '', 'Notes', 0, 1, 1, '');
+                """, nil, nil, nil)
+            sqlite3_close(legacyDB)
+            expect(schemaResult == SQLITE_OK, "the legacy history fixture is valid")
+            let store = try SQLiteStore(url: url)
+            let legacy = try store.dictations(matching: nil, limit: nil).first!
+            expect(legacy.availableVersions.map(\.text) == ["Hello."] && legacy.rawTranscription == "um hello",
+                   "upgrading separates inserted text and saved raw transcription")
+
+            let library = Library(store: store)
+            let capture = DictationVersionCapture(library: library)
+            let local = DictationVersion(source: .local, label: "This Mac", text: "review the cache")
+            let cloud = DictationVersion(source: .cloud, label: "Cloud · Gemini", text: "Review the cache.")
+            capture.append(local)
+            capture.append(cloud)
+            let record = DictationRecord(raw: local.text, cleaned: cloud.text, appBundleID: "",
+                                         appName: "Notes", duration: 2, versions: capture.versions)
+            library.add(record)
+            capture.attach(to: record.id)
+            let next = DictationRecord(raw: "the next recording", cleaned: "", appBundleID: "",
+                                       appName: "Notes", duration: 1)
+            library.add(next)
+            let totals = try store.dailyStats()
+            let late = DictationVersion(source: .cloud, label: "Cloud · another model", text: "Inspect the cache.")
+            capture.append(late)
+            capture.append(late)
+            let reopened = try SQLiteStore(url: url)
+            let rows = try reopened.dictations(matching: nil, limit: nil)
+            expect(rows.first { $0.id == record.id }?.versions == [local, cloud, late],
+                   "local, cloud, and late outputs survive reopening without duplicates")
+            expect(rows.first { $0.id == next.id }?.versions.isEmpty == true,
+                   "a late result belongs to its recording rather than the next one")
+            expect(try store.dailyStats() == totals, "late versions do not change word counts or dictation totals")
+            expect(try store.dictations(matching: "Inspect", limit: nil).first?.id == record.id,
+                   "search finds an alternative version")
+            let identical = DictationVersion(source: .cloud, label: "Cloud · same words", text: local.text)
+            capture.append(identical)
+            expect(library.dictations.first { $0.id == record.id }?.versions.count == 4,
+                   "identical text from different models keeps both sources")
+            library.delete(record)
+            capture.append(DictationVersion(source: .cloud, label: "Too late", text: "Late result"))
+            expect(try store.dictations(matching: nil, limit: nil).allSatisfy { $0.id != record.id },
+                   "a late result cannot recreate deleted history")
+            expect(try store.dictations(matching: "Inspect", limit: nil).isEmpty,
+                   "deleting history also deletes its alternative versions")
+
+            let memory = MemoryStore()
+            try memory.insert(record)
+            try memory.addVersion(late, to: record.id)
+            expect(try memory.dictations(matching: "Inspect", limit: nil).first?.versions.last == late,
+                   "the memory fallback also saves and searches alternative versions")
+        } catch {
+            failures += 1
+            print("  FAIL  dictation versions threw \(error)")
         }
 
         // MARK: Records
@@ -941,6 +1015,9 @@ enum SelfCheck {
         for _ in 0..<20 { meter.update(rms: 0.125, frameCount: 800, sampleRate: 16_000) }
         expect(meter.level > 0.99, "-18 dBFS fills the bar")
 
+        let telemetry = CloudTelemetryCheck.run()
+        checks += telemetry.checks
+        failures += telemetry.failures
         print("\n\(checks - failures)/\(checks) passed")
         exit(failures == 0 ? 0 : 1)
     }

@@ -40,6 +40,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         MainActor.assumeIsolated {
             if CommandLine.arguments.contains("--self-check") { SelfCheck.run() }
+            if let index = CommandLine.arguments.firstIndex(of: "--check-cloud-live"),
+               CommandLine.arguments.indices.contains(index + 2) {
+                let audio = CommandLine.arguments[index + 1]
+                let output = CommandLine.arguments[index + 2]
+                Task { await CloudLiveCheck.run(audio: audio, output: output) }
+                return
+            }
+            if let index = CommandLine.arguments.firstIndex(of: "--check-cloud-http"),
+               CommandLine.arguments.indices.contains(index + 2) {
+                let baseURL = CommandLine.arguments[index + 1]
+                let output = CommandLine.arguments[index + 2]
+                Task { await CloudHTTPCheck.run(baseURL: baseURL, output: output) }
+                return
+            }
             if let index = CommandLine.arguments.firstIndex(of: "--check-insertion"),
                CommandLine.arguments.indices.contains(index + 1) {
                 let output = CommandLine.arguments[index + 1]
