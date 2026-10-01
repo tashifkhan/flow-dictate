@@ -370,7 +370,7 @@ struct PanelView: View {
 
     private func result(_ title: String, _ text: String) -> some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(title)
+            Text(controller.lastProcessingDuration.map { "\(title) · Ready in \(RequestDisplay.seconds($0))" } ?? title)
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Text(text)

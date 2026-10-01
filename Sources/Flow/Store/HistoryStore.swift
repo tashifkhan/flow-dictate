@@ -9,6 +9,9 @@ import Foundation
 /// writing one new conformance and changing one line in `Library`.
 protocol HistoryStore: AnyObject, Sendable {
     func insert(_ dictation: DictationRecord) throws
+    func addVersion(_ version: DictationVersion, to dictationID: UUID) throws
+    func saveRequest(_ request: CloudRequestRecord) throws
+    func cloudRequests() throws -> [CloudRequestRecord]
     func dictations(matching query: String?, limit: Int?) throws -> [DictationRecord]
     func setPinned(dictation id: UUID, _ pinned: Bool) throws
     func delete(dictation id: UUID) throws

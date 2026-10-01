@@ -1,5 +1,21 @@
 import Foundation
 
+/// A model's output, kept even when another model produced the same text.
+struct DictationVersion: Identifiable, Hashable, Sendable {
+    enum Source: String, Sendable { case local, cloud, inserted, original, raw }
+    var id = UUID()
+    var source: Source
+    var label: String
+    var text: String
+    var configID: UUID?
+
+    var displayLabel: String {
+        if label == "This Mac · original transcript" { return "Raw · Apple speech recognition" }
+        if label == "Original transcript" { return "Raw transcription" }
+        return label
+    }
+}
+
 /// A single dictation: what you said, and what got inserted.
 ///
 /// `raw` is kept on purpose. When cleanup mangles something you fix the prompt,
@@ -14,6 +30,23 @@ struct DictationRecord: Identifiable, Hashable, Sendable {
     var duration: TimeInterval
     var pinned: Bool = false
     var tags: [String] = []
+    var versions: [DictationVersion] = []
+    var appleRaw: String?
+    var processingDuration: TimeInterval?
+
+    var totalDuration: TimeInterval? { processingDuration.map { duration + $0 } }
+    var rawTranscription: String { appleRaw ?? versions.first(where: { $0.source == .raw })?.text ?? raw }
+    var rawLabel: String { appleRaw == nil ? "Saved raw transcription" : "Raw · Apple speech recognition" }
+
+    /// Older history has only the original transcript and the inserted text.
+    var availableVersions: [DictationVersion] {
+        var available = versions.filter { $0.source != .raw && $0.label != "This Mac · original transcript" }
+        if !available.contains(where: { $0.text == inserted }) {
+            available.insert(DictationVersion(id: id, source: .inserted,
+                                             label: "Inserted text", text: inserted), at: 0)
+        }
+        return available
+    }
 
     /// What actually reached the cursor.
     var inserted: String { cleaned.isEmpty ? raw : cleaned }
