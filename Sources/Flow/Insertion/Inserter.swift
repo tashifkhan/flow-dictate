@@ -89,6 +89,7 @@ final class Inserter {
             guard let target = Self.retractable(target: decision.target, lastInsert: lastInsert) else {
                 throw InsertError.empty
             }
+            guard lastInsertSitsAtCaret(in: app) else { throw InsertError.empty }
             try backspace(count: target.count)
             lastInsert = nil
             return Result(text: "", destination: .textField)
@@ -102,6 +103,11 @@ final class Inserter {
                 try insert(text, in: app)
                 lastInsert = text
                 return Result(text: text, destination: .textField)
+            }
+            guard lastInsertSitsAtCaret(in: app) else {
+                guard !decision.text.isEmpty else { throw InsertError.empty }
+                copy(decision.text)
+                return Result(text: decision.text, destination: .clipboard)
             }
             try backspace(count: target.count)
             try insert(decision.text, in: app)
