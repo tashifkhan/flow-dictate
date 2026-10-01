@@ -2,6 +2,26 @@ import Foundation
 import Observation
 import OSLog
 
+/// Each recording owns its results, including requests that finish after insertion
+/// or after the next recording starts.
+@MainActor
+final class DictationVersionCapture {
+    let id = UUID()
+    private let library: Library
+    private var dictationID: UUID?
+    private(set) var versions: [DictationVersion] = []
+
+    init(library: Library) { self.library = library }
+
+    func append(_ version: DictationVersion) {
+        guard !version.text.isEmpty, !versions.contains(where: { $0.id == version.id }) else { return }
+        versions.append(version)
+        if let dictationID { library.addVersion(version, to: dictationID) }
+    }
+
+    func attach(to dictationID: UUID) { self.dictationID = dictationID }
+}
+
 /// The observable face of the history store.
 ///
 /// Views read the arrays; everything that mutates goes through here so the store and
@@ -15,6 +35,7 @@ final class Library {
     private(set) var notes: [NoteRecord] = []
     /// Survives the retention purge, so statistics cover more than the kept transcripts.
     private(set) var dailyStats: [DailyStat] = []
+    private(set) var cloudRequests: [CloudRequestRecord] = []
     private(set) var loadFailure: String?
 
     var query: String = "" {
@@ -45,6 +66,7 @@ final class Library {
             dictations = try store.dictations(matching: query, limit: nil)
             notes = try store.notes(matching: query)
             dailyStats = try store.dailyStats()
+            cloudRequests = try store.cloudRequests()
             loadFailure = nil
         } catch {
             log.error("reload failed: \(error.localizedDescription, privacy: .public)")
@@ -56,6 +78,35 @@ final class Library {
 
     func add(_ dictation: DictationRecord) {
         perform { try store.insert(dictation) }
+    }
+
+    func addVersion(_ version: DictationVersion, to dictationID: UUID) {
+        perform { try store.addVersion(version, to: dictationID) }
+    }
+
+    func recordRequest(_ request: CloudRequestRecord) {
+        if let previous = cloudRequests.first(where: { $0.id == request.id }),
+           previous.status != .running && request.status == .running { return }
+        do {
+            try store.saveRequest(request)
+            if let index = cloudRequests.firstIndex(where: { $0.id == request.id }) { cloudRequests[index] = request }
+            else { cloudRequests.insert(request, at: 0) }
+        } catch {
+            loadFailure = error.localizedDescription
+            log.error("request log failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    func interruptOldRequests() {
+        for var request in cloudRequests where request.status == .running {
+            request.status = .interrupted
+            recordRequest(request)
+        }
+    }
+
+    func requests(for dictationID: UUID, configID: UUID? = nil) -> [CloudRequestRecord] {
+        cloudRequests.filter { $0.dictationID == dictationID && (configID == nil || $0.configID == configID) }
+            .sorted { $0.startedAt < $1.startedAt }
     }
 
     func togglePin(_ dictation: DictationRecord) {
@@ -137,9 +188,27 @@ final class MemoryStore: HistoryStore, @unchecked Sendable {
     private let lock = NSLock()
     private var dictationRows: [UUID: DictationRecord] = [:]
     private var noteRows: [UUID: NoteRecord] = [:]
+    private var requestRows: [UUID: CloudRequestRecord] = [:]
+
+    func saveRequest(_ request: CloudRequestRecord) throws {
+        lock.withLock { requestRows[request.id] = request }
+    }
+
+    func cloudRequests() throws -> [CloudRequestRecord] {
+        lock.withLock { requestRows.values.sorted { $0.startedAt > $1.startedAt } }
+    }
 
     func insert(_ dictation: DictationRecord) throws {
         lock.withLock { dictationRows[dictation.id] = dictation }
+    }
+
+    func addVersion(_ version: DictationVersion, to dictationID: UUID) throws {
+        lock.withLock {
+            guard var record = dictationRows[dictationID],
+                  !record.versions.contains(where: { $0.id == version.id }) else { return }
+            record.versions.append(version)
+            dictationRows[dictationID] = record
+        }
     }
 
     func dictations(matching query: String?, limit: Int?) throws -> [DictationRecord] {
@@ -149,6 +218,7 @@ final class MemoryStore: HistoryStore, @unchecked Sendable {
                 rows = rows.filter {
                     $0.raw.localizedCaseInsensitiveContains(query)
                         || $0.cleaned.localizedCaseInsensitiveContains(query)
+                        || $0.versions.contains { $0.text.localizedCaseInsensitiveContains(query) }
                 }
             }
             rows.sort { ($0.pinned ? 1 : 0, $0.createdAt) > ($1.pinned ? 1 : 0, $1.createdAt) }
@@ -161,11 +231,20 @@ final class MemoryStore: HistoryStore, @unchecked Sendable {
     }
 
     func delete(dictation id: UUID) throws {
-        lock.withLock { _ = dictationRows.removeValue(forKey: id) }
+        lock.withLock {
+            _ = dictationRows.removeValue(forKey: id)
+            for key in requestRows.keys where requestRows[key]?.dictationID == id { requestRows[key]?.dictationID = nil }
+        }
     }
 
     func purgeDictations(before cutoff: Date) throws {
-        lock.withLock { dictationRows = dictationRows.filter { $0.value.pinned || $0.value.createdAt >= cutoff } }
+        lock.withLock {
+            let purged = Set(dictationRows.values.filter { !$0.pinned && $0.createdAt < cutoff }.map(\.id))
+            dictationRows = dictationRows.filter { !purged.contains($0.key) }
+            for key in requestRows.keys {
+                if let id = requestRows[key]?.dictationID, purged.contains(id) { requestRows[key]?.dictationID = nil }
+            }
+        }
     }
 
     func dailyStats() throws -> [DailyStat] {

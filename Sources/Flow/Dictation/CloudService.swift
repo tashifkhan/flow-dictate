@@ -6,6 +6,8 @@ struct CloudResult: Identifiable, Sendable {
     let id = UUID()
     let label: String
     let text: String
+    var source: DictationVersion.Source = .cloud
+    var configID: UUID?
 }
 
 /// What one ladder rung produced.
@@ -15,6 +17,9 @@ struct RungOutcome: Sendable {
     let raw: String
     /// Finished text, or nil when this Mac still has to refine `raw`.
     let text: String?
+    /// False when refinement is off and the config only used the local transcript.
+    let usesCloud: Bool
+    let configID: UUID
 }
 
 /// Whether the Mac has a route to the internet. Checked before each dictation so an
@@ -37,6 +42,20 @@ final class NetworkStatus: @unchecked Sendable {
 }
 
 actor CloudService {
+    private let recordRequest: @Sendable (CloudRequestRecord) -> Void
+    init(recordRequest: @escaping @Sendable (CloudRequestRecord) -> Void = { request in
+        Task { @MainActor in AppEnvironment.shared.library.recordRequest(request) }
+    }) { self.recordRequest = recordRequest }
+
+    private struct Scope: Sendable {
+        var dictationID: UUID?
+        var configID: UUID?
+        var label: String
+        var stage: CloudRequestRecord.Stage
+        func stage(_ stage: CloudRequestRecord.Stage) -> Scope {
+            var copy = self; copy.stage = stage; return copy
+        }
+    }
     private nonisolated let log = Logger(subsystem: "sh.taf.flow", category: "cloud")
     private let session: URLSession = {
         let configuration = URLSessionConfiguration.ephemeral
@@ -53,6 +72,7 @@ actor CloudService {
     typealias MakeContext = @Sendable (String) async -> CleanupContext
 
     struct Job: Sendable {
+        var dictationID: UUID? = nil
         var audio: Data
         /// What this Mac heard. Two-pass configs with a local transcriber refine this.
         var localRaw: String
@@ -111,9 +131,9 @@ actor CloudService {
                 let rest = Array(tasks.dropFirst(index + 1))
                 Task {
                     for task in rest {
-                        guard let outcome = await task.value else { continue }
+                        guard let outcome = await task.value, outcome.usesCloud else { continue }
                         let label = outcome.text == nil ? outcome.label + ", unrefined" : outcome.label
-                        late(CloudResult(label: label, text: outcome.text ?? outcome.raw))
+                        late(CloudResult(label: label, text: outcome.text ?? outcome.raw, configID: outcome.configID))
                     }
                 }
                 return outcome
@@ -128,6 +148,7 @@ actor CloudService {
         _ rung: CloudRung, number: Int, job: Job, makeContext: MakeContext, progress: Progress
     ) async throws -> RungOutcome {
         let label = "\(number). \(rung.label)"
+        let scope = Scope(dictationID: job.dictationID, configID: rung.id, label: label, stage: .onePass)
         switch rung.step {
         case .onePass(let route):
             // Spoken commands ("scratch that") need this Mac's cleanup to act on them.
@@ -135,28 +156,29 @@ actor CloudService {
             guard job.audio.count > 44 else { throw CloudError.noAudio }
             progress("Writing with \(route.label)")
             let context = await makeContext(job.localRaw)
-            let text = try await onePass(job.audio, route: route, context: context)
+            let text = try await onePass(job.audio, route: route, context: context, scope: scope)
             guard job.localRaw.isEmpty || Self.faithful(text, to: job.localRaw, language: job.language) else {
                 throw CloudError.strayed
             }
-            return RungOutcome(label: label, raw: job.localRaw.isEmpty ? text : job.localRaw, text: text)
+            return RungOutcome(label: label, raw: job.localRaw.isEmpty ? text : job.localRaw, text: text,
+                               usesCloud: true, configID: rung.id)
 
         case .twoPass(let transcriber, let refiner):
             var raw = job.localRaw
             if let transcriber {
                 guard job.audio.count > 44 else { throw CloudError.noAudio }
                 progress("Transcribing with \(transcriber.label)")
-                raw = try await transcribe(job.audio, route: transcriber, language: job.language)
+                raw = try await transcribe(job.audio, route: transcriber, language: job.language, scope: scope.stage(.transcription))
             }
             guard !raw.isEmpty else { throw CloudError.invalidResponse }
             guard job.refine, let refiner, !CleanupService.soundsLikeCommand(raw) else {
-                return RungOutcome(label: label, raw: raw, text: nil)
+                return RungOutcome(label: label, raw: raw, text: nil, usesCloud: transcriber != nil, configID: rung.id)
             }
             progress("Refining with \(refiner.label)")
             let context = await makeContext(raw)
-            let text = try await refine(raw, route: refiner, context: context)
+            let text = try await refine(raw, route: refiner, context: context, scope: scope.stage(.refinement))
             guard Self.faithful(text, to: raw, language: job.language) else { throw CloudError.strayed }
-            return RungOutcome(label: label, raw: raw, text: text)
+            return RungOutcome(label: label, raw: raw, text: text, usesCloud: true, configID: rung.id)
         }
     }
 
@@ -187,10 +209,17 @@ actor CloudService {
 
     // MARK: - Requests
 
-    private func transcribe(_ audio: Data, route: CloudRoute, language: TranscriptionLanguage) async throws -> String {
+    private func transcribe(_ audio: Data, route: CloudRoute, language: TranscriptionLanguage, scope: Scope) async throws -> String {
         let account = route.provider
         switch account.api {
         case .openAI:
+            if route.model.audioInput == .multimodal {
+                let instruction = language == .hinglish
+                    ? "Transcribe this speech exactly. Keep Hindi and English words as spoken. Return only the transcript."
+                    : "Transcribe this speech exactly. Return only the transcript."
+                let payload = Self.audioChatPayload(audio: audio, modelID: route.model.modelID, instruction: instruction)
+                return try chatText(try await sendJSON(account, route.model, path: "chat/completions", payload: payload, scope: scope))
+            }
             let boundary = UUID().uuidString
             var body = Data()
             func field(_ name: String, _ value: String) {
@@ -202,7 +231,7 @@ actor CloudService {
             body.append(audio)
             body.append(Data("\r\n--\(boundary)--\r\n".utf8))
             let json = try await send(account, path: "audio/transcriptions", body: body,
-                                      contentType: "multipart/form-data; boundary=\(boundary)")
+                                      contentType: "multipart/form-data; boundary=\(boundary)", modelID: route.model.modelID, scope: scope)
             return try nonempty(json["text"] as? String)
         case .google:
             guard ((audio.count + 2) / 3) * 4 < 19_000_000 else { throw CloudError.audioTooLarge }
@@ -213,41 +242,41 @@ actor CloudService {
                 ["text": prompt],
                 ["inlineData": ["mimeType": "audio/wav", "data": audio.base64EncodedString()]],
             ]]]]
-            return try geminiText(try await sendJSON(account, route.model, path: generatePath(route), payload: payload))
+            return try geminiText(try await sendJSON(account, route.model, path: generatePath(route), payload: payload, scope: scope))
         case .anthropic:
             // Anthropic's Messages API accepts text and images, not audio input.
             throw CloudError.unsupportedAudio
         }
     }
 
-    private func onePass(_ audio: Data, route: CloudRoute, context: CleanupContext) async throws -> String {
+    private func onePass(_ audio: Data, route: CloudRoute, context: CleanupContext, scope: Scope) async throws -> String {
         let account = route.provider
         let instruction = "Listen to this recording and return the finished written dictation. Do the transcription and cleanup in this one response. "
             + refinementInstruction(context)
         switch account.api {
         case .openAI:
-            let payload: [String: Any] = [
-                "model": route.model.modelID,
-                "modalities": ["text"],
-                "messages": [["role": "user", "content": [
-                    ["type": "text", "text": instruction],
-                    ["type": "input_audio", "input_audio": ["data": audio.base64EncodedString(), "format": "wav"]],
-                ]]],
-            ]
-            return try chatText(try await sendJSON(account, route.model, path: "chat/completions", payload: payload))
+            let payload = Self.audioChatPayload(audio: audio, modelID: route.model.modelID, instruction: instruction)
+            return try chatText(try await sendJSON(account, route.model, path: "chat/completions", payload: payload, scope: scope))
         case .google:
             guard ((audio.count + 2) / 3) * 4 < 19_000_000 else { throw CloudError.audioTooLarge }
             let payload: [String: Any] = ["contents": [["parts": [
                 ["text": instruction],
                 ["inlineData": ["mimeType": "audio/wav", "data": audio.base64EncodedString()]],
             ]]]]
-            return try geminiText(try await sendJSON(account, route.model, path: generatePath(route), payload: payload))
+            return try geminiText(try await sendJSON(account, route.model, path: generatePath(route), payload: payload, scope: scope))
         case .anthropic:
             throw CloudError.unsupportedAudio
         }
     }
 
-    private func refine(_ text: String, route: CloudRoute, context: CleanupContext) async throws -> String {
+    static func audioChatPayload(audio: Data, modelID: String, instruction: String) -> [String: Any] {
+        ["model": modelID, "modalities": ["text"], "messages": [["role": "user", "content": [
+            ["type": "text", "text": instruction],
+            ["type": "input_audio", "input_audio": ["data": audio.base64EncodedString(), "format": "wav"]],
+        ]]]]
+    }
+
+    private func refine(_ text: String, route: CloudRoute, context: CleanupContext, scope: Scope) async throws -> String {
         let account = route.provider
         let instruction = refinementInstruction(context)
         switch account.api {
@@ -255,14 +284,14 @@ actor CloudService {
             let payload: [String: Any] = ["model": route.model.modelID, "messages": [
                 ["role": "system", "content": instruction], ["role": "user", "content": text],
             ]]
-            return try chatText(try await sendJSON(account, route.model, path: "chat/completions", payload: payload))
+            return try chatText(try await sendJSON(account, route.model, path: "chat/completions", payload: payload, scope: scope))
         case .google:
             let payload: [String: Any] = ["contents": [["parts": [["text": instruction + "\n\n" + text]]]]]
-            return try geminiText(try await sendJSON(account, route.model, path: generatePath(route), payload: payload))
+            return try geminiText(try await sendJSON(account, route.model, path: generatePath(route), payload: payload, scope: scope))
         case .anthropic:
             let payload: [String: Any] = ["model": route.model.modelID, "max_tokens": 4096,
                                           "system": instruction, "messages": [["role": "user", "content": text]]]
-            let json = try await sendJSON(account, route.model, path: "messages", payload: payload)
+            let json = try await sendJSON(account, route.model, path: "messages", payload: payload, scope: scope)
             let blocks = json["content"] as? [[String: Any]]
             return try nonempty(blocks?.filter { $0["type"] as? String == "text" }
                 .compactMap { $0["text"] as? String }.joined())
@@ -274,7 +303,15 @@ actor CloudService {
     }
 
     private func refinementInstruction(_ context: CleanupContext) -> String {
-        var instruction = "Write for \(context.appName). Keep every intended fact, name, number, and constraint. Remove filler, false starts, and repetition. Resolve spoken corrections. Fix punctuation and paragraphs. Keep the speaker's tone. Return only the finished text. Do not answer the speaker or add facts."
+        var instruction = DictationCleanupPolicy.instruction
+            + "\nThe destination is \(context.appName). \(context.appDescription)."
+        switch context.writingContext {
+        case .chat: instruction += " Keep casual language and contractions."
+        case .email: instruction += " Use complete sentences and readable paragraphs without adding a greeting or signature."
+        case .development: instruction += " Preserve technical names, identifiers, commands, and conventional capitalization. Do not turn prose into code."
+        case .document: instruction += " Preserve the document's paragraphs and list structure."
+        case .browser, .general: instruction += " Match the speaker's tone."
+        }
         if context.transcriptionLanguage == .hinglish {
             instruction += " Write Hindi words in Roman-script Hinglish. Keep English words in English."
         }
@@ -305,20 +342,45 @@ actor CloudService {
         }
     }
 
-    /// Sends with the reasoning setting, and once more without it if the endpoint
-    /// rejects the request. Compatible servers often do not know these fields.
+    /// Every retry is a separate measured request. Streaming falls back to JSON
+    /// for compatible servers that reject streaming parameters.
     private func sendJSON(
-        _ account: CloudProvider, _ model: CloudModel, path: String, payload: [String: Any]
+        _ account: CloudProvider, _ model: CloudModel, path: String, payload: [String: Any], scope: Scope
     ) async throws -> [String: Any] {
-        var tuned = payload
-        Self.applyReasoning(model, api: account.api, to: &tuned)
-        do {
-            return try await send(account, path: path, body: JSONSerialization.data(withJSONObject: tuned),
-                                  contentType: "application/json")
-        } catch CloudError.http(400) where model.reasoning != .automatic {
-            log.notice("\(account.name, privacy: .public) rejected the reasoning setting; retrying without it")
-            return try await send(account, path: path, body: JSONSerialization.data(withJSONObject: payload),
-                                  contentType: "application/json")
+        var streaming = true
+        var reasoning = model.reasoning != .automatic
+        while true {
+            var tuned = payload
+            if reasoning { Self.applyReasoning(model, api: account.api, to: &tuned) }
+            var endpoint = path
+            var query: [(String, String)] = []
+            if streaming {
+                switch account.api {
+                case .openAI:
+                    tuned["stream"] = true
+                    tuned["stream_options"] = ["include_usage": true]
+                case .anthropic: tuned["stream"] = true
+                case .google:
+                    endpoint = path.replacingOccurrences(of: ":generateContent", with: ":streamGenerateContent")
+                    query = [("alt", "sse")]
+                }
+            }
+            do {
+                var request = try request(account, path: endpoint, query: query)
+                request.httpMethod = "POST"
+                request.httpBody = try JSONSerialization.data(withJSONObject: tuned)
+                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                if streaming { request.setValue("text/event-stream", forHTTPHeaderField: "Accept") }
+                return try await perform(request, provider: account, modelID: model.modelID, scope: scope)
+            } catch CloudError.http(let status) where [400, 404, 422].contains(status) {
+                if streaming {
+                    streaming = false
+                    log.notice("\(account.name, privacy: .public) rejected streaming; retrying as JSON")
+                } else if reasoning && status != 404 {
+                    reasoning = false
+                    log.notice("\(account.name, privacy: .public) rejected reasoning; retrying with model defaults")
+                } else { throw CloudError.http(status) }
+            }
         }
     }
 
@@ -351,29 +413,90 @@ actor CloudService {
         return request
     }
 
-    private func send(_ account: CloudProvider, path: String, body: Data, contentType: String) async throws -> [String: Any] {
+    private func send(_ account: CloudProvider, path: String, body: Data, contentType: String,
+                      modelID: String, scope: Scope) async throws -> [String: Any] {
         var request = try request(account, path: path)
         request.httpMethod = "POST"
         request.httpBody = body
         request.setValue(contentType, forHTTPHeaderField: "Content-Type")
-        return try await perform(request)
+        return try await perform(request, provider: account, modelID: modelID, scope: scope)
     }
 
     private func get(_ account: CloudProvider, path: String, query: [(String, String)]) async throws -> [String: Any] {
         var request = try request(account, path: path, query: query)
         request.timeoutInterval = 10
-        return try await perform(request)
+        return try await perform(request, provider: account, modelID: "",
+                                 scope: Scope(label: "Model listing", stage: .models))
     }
 
-    private func perform(_ request: URLRequest) async throws -> [String: Any] {
-        let (data, response) = try await session.data(for: request)
-        guard let status = response as? HTTPURLResponse, (200..<300).contains(status.statusCode) else {
-            throw CloudError.http((response as? HTTPURLResponse)?.statusCode ?? 0)
+    private func perform(_ request: URLRequest, provider: CloudProvider,
+                         modelID: String, scope: Scope) async throws -> [String: Any] {
+        var record = CloudRequestRecord(dictationID: scope.dictationID, configID: scope.configID,
+                                        configLabel: scope.label, providerID: provider.id,
+                                        providerName: provider.name, modelID: modelID, stage: scope.stage)
+        let start = ContinuousClock.now
+        recordRequest(record)
+        var stream = CloudStream(api: provider.api)
+        defer {
+            record.elapsed = (ContinuousClock.now - start).timeInterval
+            record.firstTokenLatency = stream.firstOutput
+            if let first = stream.firstOutput, let last = stream.lastOutput, last > first {
+                record.generationDuration = last - first
+            }
+            if stream.usage.input != nil || stream.usage.output != nil { record.usage = stream.usage }
+            recordRequest(record)
+            if record.isInference {
+                let completed = record
+                let report = recordRequest
+                Task {
+                    if let price = await ModelPricing.shared.price(provider: provider, modelID: modelID,
+                                                                    inputTokens: completed.usage.input) {
+                        var priced = completed
+                        priced.price = price
+                        report(priced)
+                    }
+                }
+            }
         }
-        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw CloudError.invalidResponse
+        do {
+            let (bytes, response) = try await session.bytes(for: request)
+            record.httpStatus = (response as? HTTPURLResponse)?.statusCode
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+                throw CloudError.http(record.httpStatus ?? 0)
+            }
+            let json: [String: Any]
+            if http.value(forHTTPHeaderField: "Content-Type")?.lowercased().contains("text/event-stream") == true {
+                var count = 0
+                for try await byte in bytes {
+                    try Task.checkCancellation()
+                    count += 1
+                    if count > 16_000_000 { throw CloudError.invalidResponse }
+                    try stream.byte(byte, elapsed: (ContinuousClock.now - start).timeInterval)
+                }
+                try stream.finish(elapsed: (ContinuousClock.now - start).timeInterval)
+                json = try stream.responseJSON()
+            } else {
+                var data = Data()
+                for try await byte in bytes {
+                    try Task.checkCancellation()
+                    data.append(byte)
+                    if data.count > 16_000_000 { throw CloudError.invalidResponse }
+                }
+                guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any], object["error"] == nil else {
+                    throw CloudError.invalidResponse
+                }
+                json = object
+                record.usage = TokenUsage.parse(json, api: provider.api)
+            }
+            if scope.stage == .models { record.usage = TokenUsage(input: 0, output: 0) }
+            record.status = .succeeded
+            return json
+        } catch {
+            record.status = Task.isCancelled || error is CancellationError ? .cancelled : .failed
+            // Keep request metadata, not payloads, response text, URLs, or credentials.
+            record.error = error is CloudError ? error.localizedDescription : String(describing: type(of: error))
+            throw error
         }
-        return json
     }
 
     private func geminiText(_ json: [String: Any]) throws -> String {
@@ -388,7 +511,7 @@ actor CloudService {
         guard let result = text?.trimmingCharacters(in: .whitespacesAndNewlines), !result.isEmpty else {
             throw CloudError.invalidResponse
         }
-        return result
+        return DictationCleanupPolicy.withoutEmDashes(result)
     }
 
     private static func isOffline(_ error: Error) -> Bool {

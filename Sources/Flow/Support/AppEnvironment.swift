@@ -79,6 +79,8 @@ final class AppEnvironment {
     func start() {
         guard !started else { return }
         started = true
+        library.interruptOldRequests()
+        Task { await ModelPricing.shared.refresh() }
         controller.warmUp()
 
         // A renamed device keeps its place in the priority lists under its new name.

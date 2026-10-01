@@ -86,6 +86,7 @@ final class DictationController {
     private(set) var insertedResultID: UUID?
     /// Which model is working right now, for the panel.
     private(set) var processingDetail: String?
+    private(set) var lastProcessingDuration: TimeInterval?
     private(set) var cleanupAvailability: CleanupAvailability = .unknown
     /// Which transcriber is actually in use, for the settings window.
     private(set) var transcriberLabel = "resolving…"
@@ -314,6 +315,7 @@ final class DictationController {
         results = []
         insertedResultID = nil
         processingDetail = nil
+        lastProcessingDuration = nil
         resultsToken = UUID()
         cloudSettings = Settings.shared.cloud
         levels.reset()
@@ -377,6 +379,7 @@ final class DictationController {
         let duration = startedAt.map { Date.now.timeIntervalSince($0) } ?? 0
         startedAt = nil
         phase = .processing
+        let processingBegan = ContinuousClock.now
 
         let app = targetApp
         // Nil means a microphone test: shown, never delivered.
@@ -399,8 +402,32 @@ final class DictationController {
 
             let token = UUID()
             self.resultsToken = token
+            let versions = DictationVersionCapture(library: library)
             let refineEnabled = Settings.shared.cleanupEnabled
+            let localContext = self.cleanupContext(raw: localRaw, app: app, lexicon: lexicon)
+            let localTask = Task { @MainActor in
+                let availability = await cleanup.availability
+                var localDecision = refineEnabled ? await cleanup.clean(localRaw, context: localContext) : .raw(localRaw)
+                localDecision.text = DictationCleanupPolicy.withoutEmDashes(localDecision.text)
+                if localDecision.mode == .insert {
+                    localDecision.text = SpokenListFormatter.format(localDecision.text).text
+                }
+                if !Task.isCancelled, !localDecision.text.isEmpty {
+                    let label = refineEnabled && availability.isAvailable
+                        ? "Local transcription · Apple Intelligence" : "Local transcription · unrefined"
+                    let local = CloudResult(label: label, text: localDecision.text, source: .local)
+                    versions.append(DictationVersion(id: local.id, source: .local, label: label, text: local.text))
+                    self.addLateResult(local, token: token)
+                }
+                return localDecision
+            }
+            if !localRaw.isEmpty {
+                let local = CloudResult(label: "Raw · Apple speech recognition", text: localRaw, source: .raw)
+                self.results.append(local)
+                versions.append(DictationVersion(id: local.id, source: .raw, label: local.label, text: local.text))
+            }
             let job = CloudService.Job(
+                dictationID: versions.id,
                 audio: await pipeline.recordedAudio, localRaw: localRaw, refine: refineEnabled,
                 language: Settings.shared.transcriptionLanguage, parallel: cloudSettings.parallelResults)
             // The cloud ladder, top to bottom. This Mac is the rung after the last.
@@ -411,14 +438,20 @@ final class DictationController {
                     Task { @MainActor in if self.phase == .processing { self.processingDetail = detail } }
                 },
                 late: { result in
-                    Task { @MainActor in self.addLateResult(result, token: token) }
+                    Task { @MainActor in
+                        versions.append(DictationVersion(id: result.id, source: result.source,
+                                                         label: "Cloud · " + result.label, text: result.text,
+                                                         configID: result.configID))
+                        self.addLateResult(result, token: token)
+                    }
                 })
             // Escape while the cloud was working. cancel() has already reset the panel;
             // the answer must not land anyway.
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled else { localTask.cancel(); return }
             let raw = outcome?.raw ?? localRaw
-            if cloudSettings.parallelResults, !localRaw.isEmpty, outcome != nil, outcome?.raw != localRaw {
-                self.results.append(CloudResult(label: "This Mac, unrefined", text: localRaw))
+            if let outcome, outcome.usesCloud {
+                versions.append(DictationVersion(source: .cloud, label: "Cloud · " + outcome.label,
+                                                 text: outcome.text ?? outcome.raw, configID: outcome.configID))
             }
             guard !raw.isEmpty else {
                 // Distinguish "the mic gave us nothing" from "you did not say anything".
@@ -442,7 +475,14 @@ final class DictationController {
             var composed: ComposedDictation?
             var decision: Decision
             if spokenList {
-                let result = DictationComposer.compose(formatted, previous: openList)
+                var listText = formatted.text
+                if !listText.isEmpty, refineEnabled {
+                    if let text = outcome?.text { listText = text }
+                    else if raw == localRaw { listText = await localTask.value.text }
+                    else { listText = await self.cleanedDecision(raw: listText, app: app, cleanup: cleanup, lexicon: lexicon).text }
+                    listText = DictationCleanupPolicy.alignNumbering(listText, with: formatted)
+                }
+                let result = DictationComposer.compose(formatted.replacingText(listText), previous: openList)
                 guard !result.insertion.isEmpty else {
                     // "Start a numbered list" on its own: nothing to type, only state.
                     self.continuations.remember(Self.worthKeeping(result.continuation), for: anchor, now: Self.uptime)
@@ -459,12 +499,14 @@ final class DictationController {
                     decision = .raw(text)
                 } else {
                     if outcome == nil && cloudSettings.usesCloud { self.processingDetail = "Using this Mac" }
-                    decision = await self.cleanedDecision(raw: raw, app: app, cleanup: cleanup, lexicon: lexicon)
+                    decision = raw == localRaw ? await localTask.value
+                        : await self.cleanedDecision(raw: raw, app: app, cleanup: cleanup, lexicon: lexicon)
                 }
-                if cloudSettings.parallelResults, decision.mode == .insert {
+                if decision.mode == .insert {
                     let label = outcome.map { $0.text == nil ? $0.label + ", refined on this Mac" : $0.label } ?? "This Mac"
-                    let pasted = CloudResult(label: label, text: decision.text)
-                    self.results.removeAll { $0.text == pasted.text }
+                    let pasted = CloudResult(label: label, text: decision.text,
+                                             source: outcome?.usesCloud == true ? .cloud : .local,
+                                             configID: outcome?.configID)
                     self.results.insert(pasted, at: 0)
                     self.insertedResultID = pasted.id
                 }
@@ -477,6 +519,9 @@ final class DictationController {
             }
 
             guard !Task.isCancelled else { return }
+            decision.text = DictationCleanupPolicy.withoutEmDashes(decision.text)
+            let processingDuration = (ContinuousClock.now - processingBegan).timeInterval
+            self.lastProcessingDuration = processingDuration
             guard let destination else {
                 let text = decision.text.trimmingCharacters(in: .whitespacesAndNewlines)
                 self.continuations.remember(Self.worthKeeping(composed?.continuation), for: anchor, now: Self.uptime)
@@ -494,7 +539,8 @@ final class DictationController {
                 self.onNoteText?(id, decision.text)
                 self.continuations.remember(Self.worthKeeping(composed?.continuation), for: anchor, now: Self.uptime)
                 self.finish(delivery: .init(text: decision.text, destination: .textField), confirmed: true,
-                            raw: raw, cleaned: decision.text, app: app, duration: duration, library: library)
+                            raw: raw, cleaned: decision.text, app: app, duration: duration, library: library,
+                            versions: versions, appleRaw: localRaw, processingDuration: processingDuration)
                 return
             }
 
@@ -532,7 +578,8 @@ final class DictationController {
                 if landedAt != anchor { self.continuations.forget(anchor) }
 
                 self.finish(delivery: delivery, confirmed: confirmed, raw: raw, cleaned: decision.text,
-                            app: current, duration: duration, library: library)
+                            app: current, duration: duration, library: library, versions: versions,
+                            appleRaw: localRaw, processingDuration: processingDuration)
             } catch {
                 self.fail(error.localizedDescription)
             }
@@ -565,16 +612,23 @@ final class DictationController {
 
     private func finish(
         delivery: Inserter.Result, confirmed: Bool, raw: String, cleaned: String,
-        app: FrontApp, duration: TimeInterval, library: Library
+        app: FrontApp, duration: TimeInterval, library: Library, versions: DictationVersionCapture,
+        appleRaw: String, processingDuration: TimeInterval
     ) {
         let cleaned = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
-        library.add(DictationRecord(
+        let record = DictationRecord(
+            id: versions.id,
             raw: raw,
             cleaned: cleaned == raw ? "" : cleaned,
             appBundleID: app.bundleID,
             appName: app.name,
-            duration: duration
-        ))
+            duration: duration,
+            versions: versions.versions,
+            appleRaw: appleRaw,
+            processingDuration: processingDuration
+        )
+        library.add(record)
+        versions.attach(to: record.id)
         let shown = delivery.text.trimmingCharacters(in: .whitespacesAndNewlines)
         transcript = shown
         switch delivery.destination {
@@ -593,9 +647,9 @@ final class DictationController {
     }
 
     private func addLateResult(_ result: CloudResult, token: UUID) {
-        guard token == resultsToken, !results.contains(where: { $0.text == result.text }) else { return }
+        guard token == resultsToken, !results.contains(where: { $0.id == result.id }) else { return }
         // Keep the local fallback rows last; they are the least likely pick.
-        let index = results.firstIndex { $0.label.hasPrefix("This Mac") } ?? results.endIndex
+        let index = results.firstIndex { $0.source == .raw } ?? results.endIndex
         results.insert(result, at: index)
     }
 

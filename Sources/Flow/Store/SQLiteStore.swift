@@ -65,6 +65,32 @@ final class SQLiteStore: HistoryStore, @unchecked Sendable {
             );
             """)
         try exec("CREATE INDEX IF NOT EXISTS dictation_created ON dictation(created_at DESC);")
+        try addColumn("apple_raw TEXT", named: "apple_raw", to: "dictation")
+        try addColumn("processing_duration REAL", named: "processing_duration", to: "dictation")
+        try exec("""
+            CREATE TABLE IF NOT EXISTS dictation_version (
+                id TEXT PRIMARY KEY,
+                dictation_id TEXT NOT NULL REFERENCES dictation(id) ON DELETE CASCADE,
+                source TEXT NOT NULL,
+                label TEXT NOT NULL,
+                text TEXT NOT NULL
+            );
+            """)
+        try exec("CREATE INDEX IF NOT EXISTS version_dictation ON dictation_version(dictation_id);")
+        try addColumn("config_id TEXT", named: "config_id", to: "dictation_version")
+        try exec("""
+            UPDATE dictation_version SET source = 'raw', label = 'Raw · Apple speech recognition'
+            WHERE source = 'local' AND label = 'This Mac · original transcript';
+            UPDATE dictation SET apple_raw = (
+                SELECT text FROM dictation_version v WHERE v.dictation_id = dictation.id AND v.source = 'raw' LIMIT 1
+            ) WHERE apple_raw IS NULL;
+            CREATE TABLE IF NOT EXISTS cloud_request (
+                id TEXT PRIMARY KEY, dictation_id TEXT, config_id TEXT,
+                started_at REAL NOT NULL, data TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS request_dictation ON cloud_request(dictation_id);
+            CREATE INDEX IF NOT EXISTS request_date ON cloud_request(started_at DESC);
+            """)
         try exec("""
             CREATE TABLE IF NOT EXISTS note (
                 id TEXT PRIMARY KEY,
@@ -86,6 +112,11 @@ final class SQLiteStore: HistoryStore, @unchecked Sendable {
             );
             """)
         try backfillDailyStats()
+    }
+
+    private func addColumn(_ declaration: String, named name: String, to table: String) throws {
+        let columns = try read("PRAGMA table_info(\(table));", binds: { _ in }, row: { text($0, 1) })
+        if !columns.contains(name) { try exec("ALTER TABLE \(table) ADD COLUMN \(declaration);") }
     }
 
     /// Populates the aggregate table from existing transcripts the first time this
@@ -139,8 +170,8 @@ final class SQLiteStore: HistoryStore, @unchecked Sendable {
     func insert(_ d: DictationRecord) throws {
         try write("""
             INSERT OR REPLACE INTO dictation
-            (id, raw, cleaned, app_bundle_id, app_name, created_at, duration, pinned, tags)
-            VALUES (?,?,?,?,?,?,?,?,?);
+            (id, raw, cleaned, app_bundle_id, app_name, created_at, duration, pinned, tags, apple_raw, processing_duration)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?);
             """) { s in
             bind(s, 1, d.id.uuidString)
             bind(s, 2, d.raw)
@@ -151,7 +182,10 @@ final class SQLiteStore: HistoryStore, @unchecked Sendable {
             sqlite3_bind_double(s, 7, d.duration)
             sqlite3_bind_int(s, 8, d.pinned ? 1 : 0)
             bind(s, 9, d.tags.joined(separator: "\u{1F}"))
+            if let raw = d.appleRaw { bind(s, 10, raw) } else { sqlite3_bind_null(s, 10) }
+            if let seconds = d.processingDuration { sqlite3_bind_double(s, 11, seconds) } else { sqlite3_bind_null(s, 11) }
         }
+        for version in d.versions { try addVersion(version, to: d.id) }
 
         // Mirror into the aggregate, which retention will not purge.
         try addDailyStat(DailyStat(
@@ -163,11 +197,26 @@ final class SQLiteStore: HistoryStore, @unchecked Sendable {
     }
 
     func dictations(matching query: String?, limit: Int?) throws -> [DictationRecord] {
+        let versionRows = try read(
+            "SELECT dictation_id, id, source, label, text, config_id FROM dictation_version ORDER BY rowid;",
+            binds: { _ in }
+        ) { s in
+            (text(s, 0), DictationVersion(
+                id: UUID(uuidString: text(s, 1)) ?? UUID(),
+                source: DictationVersion.Source(rawValue: text(s, 2)) ?? .original,
+                label: text(s, 3), text: text(s, 4), configID: UUID(uuidString: text(s, 5))))
+        }
+        let versionsByID = Dictionary(grouping: versionRows, by: { $0.0 })
         // Pinned float to the top, then newest first.
-        var sql = "SELECT id, raw, cleaned, app_bundle_id, app_name, created_at, duration, pinned, tags FROM dictation"
+        var sql = "SELECT id, raw, cleaned, app_bundle_id, app_name, created_at, duration, pinned, tags, apple_raw, processing_duration FROM dictation"
         let term = query?.trimmingCharacters(in: .whitespacesAndNewlines)
         let filtering = !(term ?? "").isEmpty
-        if filtering { sql += " WHERE raw LIKE ?1 OR cleaned LIKE ?1 OR app_name LIKE ?1" }
+        if filtering {
+            sql += """
+                 WHERE raw LIKE ?1 OR cleaned LIKE ?1 OR app_name LIKE ?1
+                 OR EXISTS (SELECT 1 FROM dictation_version v WHERE v.dictation_id = dictation.id AND v.text LIKE ?1)
+                """
+        }
         sql += " ORDER BY pinned DESC, created_at DESC"
         if let limit { sql += " LIMIT \(limit)" }
 
@@ -183,8 +232,28 @@ final class SQLiteStore: HistoryStore, @unchecked Sendable {
                 createdAt: Date(timeIntervalSince1970: sqlite3_column_double(s, 5)),
                 duration: sqlite3_column_double(s, 6),
                 pinned: sqlite3_column_int(s, 7) == 1,
-                tags: text(s, 8).split(separator: "\u{1F}").map(String.init)
+                tags: text(s, 8).split(separator: "\u{1F}").map(String.init),
+                versions: versionsByID[text(s, 0)]?.map { $0.1 } ?? [],
+                appleRaw: sqlite3_column_type(s, 9) == SQLITE_NULL ? nil : text(s, 9),
+                processingDuration: sqlite3_column_type(s, 10) == SQLITE_NULL ? nil : sqlite3_column_double(s, 10)
             )
+        }
+    }
+
+    /// Late results update history without changing the inserted text or statistics.
+    /// A deleted or expired dictation stays deleted even if a request finishes later.
+    func addVersion(_ version: DictationVersion, to dictationID: UUID) throws {
+        try write("""
+            INSERT OR IGNORE INTO dictation_version (id, dictation_id, source, label, text, config_id)
+            SELECT ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM dictation WHERE id = ?);
+            """) { s in
+            bind(s, 1, version.id.uuidString)
+            bind(s, 2, dictationID.uuidString)
+            bind(s, 3, version.source.rawValue)
+            bind(s, 4, version.label)
+            bind(s, 5, version.text)
+            if let id = version.configID { bind(s, 6, id.uuidString) } else { sqlite3_bind_null(s, 6) }
+            bind(s, 7, dictationID.uuidString)
         }
     }
 
@@ -196,14 +265,43 @@ final class SQLiteStore: HistoryStore, @unchecked Sendable {
     }
 
     func delete(dictation id: UUID) throws {
+        try write("UPDATE cloud_request SET dictation_id = NULL WHERE dictation_id = ?;") { bind($0, 1, id.uuidString) }
         try write("DELETE FROM dictation WHERE id = ?;") { bind($0, 1, id.uuidString) }
     }
 
     /// Retention sweep. Pinned rows survive; you pinned them for a reason.
     func purgeDictations(before cutoff: Date) throws {
+        try write("""
+            UPDATE cloud_request SET dictation_id = NULL WHERE dictation_id IN
+            (SELECT id FROM dictation WHERE created_at < ? AND pinned = 0);
+            """) { sqlite3_bind_double($0, 1, cutoff.timeIntervalSince1970) }
         try write("DELETE FROM dictation WHERE created_at < ? AND pinned = 0;") {
             sqlite3_bind_double($0, 1, cutoff.timeIntervalSince1970)
         }
+    }
+
+    func saveRequest(_ request: CloudRequestRecord) throws {
+        let data = try JSONEncoder().encode(request)
+        let json = String(decoding: data, as: UTF8.self)
+        try write("""
+            INSERT INTO cloud_request (id, dictation_id, config_id, started_at, data) VALUES (?,?,?,?,?)
+            ON CONFLICT(id) DO UPDATE SET data = excluded.data;
+            """) { s in
+            bind(s, 1, request.id.uuidString)
+            if let id = request.dictationID { bind(s, 2, id.uuidString) } else { sqlite3_bind_null(s, 2) }
+            if let id = request.configID { bind(s, 3, id.uuidString) } else { sqlite3_bind_null(s, 3) }
+            sqlite3_bind_double(s, 4, request.startedAt.timeIntervalSince1970)
+            bind(s, 5, json)
+        }
+    }
+
+    func cloudRequests() throws -> [CloudRequestRecord] {
+        let rows = try read("SELECT data, dictation_id FROM cloud_request ORDER BY started_at DESC;", binds: { _ in }) { s in
+            var request = try? JSONDecoder().decode(CloudRequestRecord.self, from: Data(text(s, 0).utf8))
+            request?.dictationID = UUID(uuidString: text(s, 1))
+            return request
+        }
+        return rows.compactMap { $0 }
     }
 
     // MARK: - Notes
