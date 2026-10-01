@@ -150,8 +150,8 @@ actor CleanupService {
         guard !trimmed.isEmpty else { return .raw("") }
 
         let fallback = context.transcriptionLanguage == .hinglish
-            ? Self.romanizeHinglish(trimmed)
-            : trimmed
+            ? DictationCleanupPolicy.withoutEmDashes(Self.romanizeHinglish(trimmed))
+            : DictationCleanupPolicy.withoutEmDashes(trimmed)
 
         guard case .available = model.availability, let schema = decisionSchema else {
             return .raw(fallback)
@@ -176,6 +176,7 @@ actor CleanupService {
             if context.transcriptionLanguage == .hinglish {
                 decision.text = Self.romanizeHinglish(decision.text)
             }
+            decision.text = DictationCleanupPolicy.withoutEmDashes(decision.text)
             return decision
         } catch {
             log.error("cleanup failed, inserting raw: \(error.localizedDescription, privacy: .public)")
@@ -187,16 +188,7 @@ actor CleanupService {
     /// starts and repairs that a streaming word-by-word pass cannot understand.
     @InstructionsBuilder
     private func instructions(for context: CleanupContext) -> Instructions {
-        "Turn natural speech into writing that is ready to send."
-        "Never answer the speaker, continue their thought, or add your own ideas."
-        "Preserve every intentional point, fact, name, number, example, qualification, and constraint."
-        "You may rewrite or reorder clauses when that makes a rambling thought clear."
-        "Remove filler, verbal scaffolding, stutters, accidental repetition, and abandoned sentence starts."
-        "Resolve an explicit self-correction to the speaker's latest intended wording."
-        "Fix grammar, punctuation, casing, and obvious transcription mistakes."
-        "Split distinct thoughts into paragraphs. Format a clearly spoken list as a list when it reads better."
-        "Do not summarise, flatten nuance, or make the text more elaborate than the speech."
-        "Do not add greetings, sign-offs, or commentary."
+        DictationCleanupPolicy.instruction
 
         if context.transcriptionLanguage == .hinglish {
             "The speaker may mix Hindi and English. Write all Hindi in natural Roman-script Hinglish, never Devanagari."
@@ -229,7 +221,7 @@ actor CleanupService {
         // Only a command needs a referent. Shown to ordinary speech, the model starts
         // echoing the previous dictation back instead of cleaning the new one.
         if let last = context.lastInsert, !last.isEmpty, context.spokenCommand {
-            "The last text you inserted was: \(last.suffix(200))"
+            "The last text you inserted was: \(last.suffix(3000))"
         }
 
         if !context.vocabulary.isEmpty {
@@ -248,7 +240,7 @@ actor CleanupService {
         "Classify the speech before you clean it."
         "mode=insert for ordinary speech. This is almost always the answer."
         "mode=delete only when they directly tell you to scratch, undo, or delete what was just said; put the words to remove in target."
-        "mode=replace only when they directly tell you to replace or change X to Y; put X in target and Y in text."
+        "mode=replace for direct word replacements or a follow-up request to rewrite, shorten, or change the tone of your last insertion. Put the exact previous words in target and the revised text in text. Never target text you did not insert."
         "A sentence that merely talks about changing, fixing, or redoing something is ordinary speech, not a command."
         "mode=format for new line, new paragraph, all caps, or raw mode."
         "For mode=insert, text is the cleaned transcript in full and nothing else."
@@ -261,16 +253,21 @@ actor CleanupService {
     ]
 
     /// The phrases that make something a command. Anything else is dictation.
-    private static let commandPhrases = [
-        "scratch that", "scratch this", "delete that", "delete this",
-        "undo that", "undo this", "remove that", "take that back",
-        "replace", "change that to", "change this to",
-        "new line", "new paragraph", "all caps",
-    ]
-
+    /// Standalone editor commands need the previous insertion. Mentioning a
+    /// replacement or a new paragraph inside an ordinary sentence does not.
     static func soundsLikeCommand(_ raw: String) -> Bool {
-        let lowered = raw.lowercased()
-        return commandPhrases.contains { lowered.contains($0) }
+        let text = raw.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        let commands = [
+            #"^(?:please\s+)?(?:scratch|delete|undo|remove) (?:that|this)(?: please)?[.!]?$"#,
+            #"^(?:please\s+)?take that back[.!]?$"#,
+            #"^(?:please\s+)?replace .+ with .+"#,
+            #"^(?:please\s+)?change \S+(?: \S+){0,5} to .+"#,
+            #"^(?:please\s+)?change (?:that|this) to .+"#,
+            #"^(?:please\s+)?(?:make|rewrite|rephrase|shorten) (?:that|this|it|the last (?:message|dictation|text))\b.*"#,
+            #"^(?:please\s+)?add (?:a |an |some )?.*emoji[.!]?$"#,
+            #"^(?:new line|new paragraph|all caps)[.!]?$"#,
+        ]
+        return commands.contains { text.range(of: $0, options: .regularExpression) != nil }
     }
 
     /// The meaningful words in a transcript, for comparing what went in with what
@@ -355,7 +352,9 @@ actor CleanupService {
     /// Whether the cleaned text is still substantial enough to represent the speech.
     /// This catches summaries and truncation while allowing false starts to disappear.
     static func isFaithful(_ cleaned: String, to raw: String) -> Bool {
-        let spoken = intendedWordCount(raw)
+        let baseline = DictationCleanupPolicy.withoutDraftingDirections(raw)
+        if DictationCleanupPolicy.requestsShortening(raw) { return !contentWords(cleaned).isEmpty }
+        let spoken = intendedWordCount(baseline)
         guard spoken > 0 else { return true }
         return Double(contentWords(cleaned).count) >= Double(spoken) * 0.6
     }
@@ -477,6 +476,7 @@ actor CleanupService {
             "You summarise a personal voice note."
             "Be concrete. Use the note's own words where you can."
             "Never invent detail that is not in the note."
+            "Never use an em dash. Use commas or new sentences. Use straight quotation marks."
         }
         let response = try await session.respond(
             to: String(text.prefix(4000)),
@@ -484,8 +484,8 @@ actor CleanupService {
             options: GenerationOptions(samplingMode: .greedy)
         )
         return NoteSummary(
-            title: (try? response.content.value(String.self, forProperty: "title")) ?? "Note",
-            summary: (try? response.content.value(String.self, forProperty: "summary")) ?? ""
+            title: DictationCleanupPolicy.withoutEmDashes((try? response.content.value(String.self, forProperty: "title")) ?? "Note"),
+            summary: DictationCleanupPolicy.withoutEmDashes((try? response.content.value(String.self, forProperty: "summary")) ?? "")
         )
     }
 
