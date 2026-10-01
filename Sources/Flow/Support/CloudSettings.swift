@@ -42,6 +42,15 @@ enum CloudReasoning: String, CaseIterable, Codable, Identifiable, Sendable {
     }
 }
 
+/// Endpoint choice belongs to configuration, never to a list of model names.
+enum CloudAudioInput: String, CaseIterable, Codable, Identifiable, Sendable {
+    case transcription, multimodal
+    var id: String { rawValue }
+    var title: String {
+        self == .transcription ? "Audio transcription API" : "Multimodal chat API"
+    }
+}
+
 struct CloudProvider: Codable, Identifiable, Sendable {
     var id = UUID()
     var name: String
@@ -49,6 +58,8 @@ struct CloudProvider: Codable, Identifiable, Sendable {
     var enabled = false
     var baseURL: String
     var apiKey = ""
+    var pricingProviderID = ""
+    var awaitingKeychainAccess = false
 
     init(api: CloudAPI, name: String? = nil) {
         self.name = name ?? api.defaultName
@@ -56,7 +67,17 @@ struct CloudProvider: Codable, Identifiable, Sendable {
         self.baseURL = api.defaultBaseURL
     }
 
-    enum CodingKeys: String, CodingKey { case id, name, api, enabled, baseURL }
+    enum CodingKeys: String, CodingKey { case id, name, api, enabled, baseURL, pricingProviderID }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(UUID.self, forKey: .id)
+        name = try values.decode(String.self, forKey: .name)
+        api = try values.decode(CloudAPI.self, forKey: .api)
+        enabled = try values.decode(Bool.self, forKey: .enabled)
+        baseURL = try values.decode(String.self, forKey: .baseURL)
+        pricingProviderID = try values.decodeIfPresent(String.self, forKey: .pricingProviderID) ?? ""
+    }
 
     var isLocalhost: Bool {
         ["localhost", "127.0.0.1"].contains(URL(string: baseURL)?.host ?? "")
@@ -66,6 +87,7 @@ struct CloudProvider: Codable, Identifiable, Sendable {
     var problem: String? {
         if !enabled { return "Provider off" }
         if baseURL.trimmingCharacters(in: .whitespaces).isEmpty { return "No URL" }
+        if awaitingKeychainAccess && apiKey.isEmpty { return "Waiting for Keychain access" }
         if apiKey.isEmpty && !isLocalhost { return "No API key" }
         return nil
     }
@@ -79,6 +101,7 @@ struct CloudModel: Codable, Identifiable, Sendable {
     var name: String
     var modelID: String
     var reasoning: CloudReasoning = .automatic
+    var audioInput: CloudAudioInput = .transcription
 
     init(providerID: UUID, name: String, modelID: String, reasoning: CloudReasoning = .automatic) {
         self.providerID = providerID
@@ -87,7 +110,7 @@ struct CloudModel: Codable, Identifiable, Sendable {
         self.reasoning = reasoning
     }
 
-    enum CodingKeys: String, CodingKey { case id, providerID, name, modelID, reasoning }
+    enum CodingKeys: String, CodingKey { case id, providerID, name, modelID, reasoning, audioInput }
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -96,6 +119,7 @@ struct CloudModel: Codable, Identifiable, Sendable {
         name = try values.decode(String.self, forKey: .name)
         modelID = try values.decode(String.self, forKey: .modelID)
         reasoning = try values.decodeIfPresent(CloudReasoning.self, forKey: .reasoning) ?? .automatic
+        audioInput = try values.decodeIfPresent(CloudAudioInput.self, forKey: .audioInput) ?? .transcription
     }
 
     var displayName: String {
@@ -139,6 +163,7 @@ struct CloudConfig: Codable, Identifiable, Sendable {
 
 /// A config whose models can all take requests now.
 struct CloudRung: Sendable {
+    var id = UUID()
     enum Step: Sendable {
         case onePass(CloudRoute)
         case twoPass(transcriber: CloudRoute?, refiner: CloudRoute?)
@@ -257,7 +282,7 @@ struct CloudSettings: Codable, Sendable {
         case .onePass:
             guard config.model != nil else { return .failure(.init("Pick a model")) }
             return route(config.model, audio: true).flatMap { route in
-                route.map { .success(CloudRung(step: .onePass($0))) } ?? .failure(.init("Pick a model"))
+                route.map { .success(CloudRung(id: config.id, step: .onePass($0))) } ?? .failure(.init("Pick a model"))
             }
         case .twoPass:
             guard config.transcriber != nil || config.refiner != nil else {
@@ -265,7 +290,7 @@ struct CloudSettings: Codable, Sendable {
             }
             return route(config.transcriber, audio: true).flatMap { transcriber in
                 route(config.refiner, audio: false).map { refiner in
-                    CloudRung(step: .twoPass(transcriber: transcriber, refiner: refiner))
+                    CloudRung(id: config.id, step: .twoPass(transcriber: transcriber, refiner: refiner))
                 }
             }
         }
