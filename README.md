@@ -58,6 +58,7 @@ Flow is an accessory app. It lives in the menu bar with no dock icon.
 
 ```sh
 scripts/check.sh
+scripts/check-cloud.sh        # localhost provider protocol fixtures
 ```
 
 Checks covering the SQLite store, retention, search, record derivation, statistics,
@@ -137,15 +138,56 @@ one-pass audio, transcription, or refinement when you add each one. Model IDs ar
 one. Anthropic's Messages API does not accept audio, so Anthropic-format providers
 work for refinement only.
 
-Choose models in separate fallback lists for all three routes. A one-pass model gets
-audio and the cleanup prompt in one request and returns finished text. If it fails,
-Flow tries transcription and refinement as separate stages, then uses on-device models.
-You can set each model's reasoning level to Model default, Off, Low, Medium, or High.
-The exact level support depends on the model and provider. With parallel results on, Flow runs every selected
-model for a stage and inserts the first successful result in list order. Other results
-appear under "Other results" in the menu bar, where you can copy or insert one. Cloud
-audio routes send recorded audio; cloud refinement sends transcript text and relevant
-vocabulary. Turn off "Refine dictated text" in General to skip refinement.
+Cloud configs form an ordered ladder. A one-pass config finishes text directly from
+recorded audio. A two-pass config transcribes first and cleans the result second;
+either step can use this Mac. Flow tries the next config when one fails. With parallel
+results enabled, all configs run together and the highest-ranked success wins.
+Local Apple Intelligence cleanup runs alongside the cloud ladder and remains available
+as a saved alternative.
+
+The pipeline is model-agnostic within the supported provider protocols. Model IDs,
+endpoints, and each two-pass stage are user choices. One-pass audio models and
+text refiners use the same cleanup policy for fillers, repairs, formatting, and
+fact preservation. Flow does not select a special Rambler model or change the
+ladder automatically. See the [Rambler research and behavior report](docs/research/pixel-rambler.md).
+
+OpenAI-compatible transcriber models can choose **Audio transcription API** or
+**Multimodal chat API** under Two-pass audio input. Existing models keep their
+previous audio endpoint. This supports general audio models in either pipeline
+without guessing capabilities from the model's name.
+
+History has separate **Raw** and **Versions** controls in both list and grid layouts.
+Raw shows untouched Apple speech recognition. Versions contains local cleanup and
+cloud results, with a copy button for each. Late results attach to the recording that
+started them. Old records retain what was saved; they cannot reconstruct missing Apple
+raw text or timing. Finished text cannot contain em dashes, even when a model ignores
+the prompt. Raw remains unchanged.
+
+History shows time from recording stop to final text readiness and total dictation
+time. Expand **All cloud requests** for every attempted request, including failed
+configs and retries. Each cloud version also groups the requests for its own config.
+**Statistics** combines dictation metrics and cloud accounting. Today, Last 7 Days,
+Last 30 Days, Last Year, and All Time apply to both. Daily and monthly spend
+breakdowns can filter the request list. Provider and model summaries show costs
+and measured latency/speed, while Activity can show words, cloud spend, or calls.
+
+Request details include provider-reported input, output, reasoning, cache and audio
+usage, request duration, first visible streamed-token latency, and generation speed.
+Non-streamed replies and one-chunk replies cannot report generation speed. Usage is
+never inferred from word counts. USD cost estimates use exact provider/model prices
+from `models.dev/api.json`, cached daily and saved with each request. Missing exact
+Google Transcribe entries use official rates verified on October 1, 2026, with a
+source URL and verification date. Updated catalog prices take precedence. This
+fallback applies only to the direct Google host. Compatible
+proxies can set a models.dev provider ID in the provider editor. Unknown prices or
+usage stay unknown and are counted separately from known spend. Accounting metadata
+contains no transcript, audio, request body, response body, or API key. It survives
+transcript deletion and retention so cost totals remain available.
+
+Saved keys load in the background. If macOS needs Keychain authorization, the window
+and local dictation stay available and the Models pane shows the pending state.
+Approve Flow in the macOS dialog, or use **Reload saved keys from Keychain** in Models
+after a denied request. Loading an existing key does not rewrite it.
 
 Voice commands ride the same round trip as ordinary dictation: "scratch that",
 "replace X with Y", "new paragraph".
