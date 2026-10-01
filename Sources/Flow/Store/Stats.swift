@@ -17,13 +17,27 @@ enum StatsRange: String, CaseIterable, Identifiable, Sendable {
     }
 
     var cutoff: Date? {
-        let calendar = Calendar.current
+        cutoff(at: .now)
+    }
+
+    /// Daily aggregates and cloud calls use the same local-day boundaries.
+    func cutoff(at date: Date, calendar: Calendar = .current) -> Date? {
+        let start: Date?
         switch self {
-        case .today: return calendar.startOfDay(for: .now)
-        case .week: return calendar.date(byAdding: .day, value: -7, to: .now)
-        case .month: return calendar.date(byAdding: .day, value: -30, to: .now)
-        case .year: return calendar.date(byAdding: .year, value: -1, to: .now)
+        case .today: start = date
+        case .week: start = calendar.date(byAdding: .day, value: -7, to: date)
+        case .month: start = calendar.date(byAdding: .day, value: -30, to: date)
+        case .year: start = calendar.date(byAdding: .year, value: -1, to: date)
         case .allTime: return nil
+        }
+        return start.map { calendar.startOfDay(for: $0) }
+    }
+
+    func requests(_ all: [CloudRequestRecord], at date: Date = .now, calendar: Calendar = .current) -> [CloudRequestRecord] {
+        let cutoff = cutoff(at: date, calendar: calendar)
+        let tomorrow = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: date)) ?? date
+        return all.filter { request in
+            request.isInference && request.startedAt < tomorrow && (cutoff.map { request.startedAt >= $0 } ?? true)
         }
     }
 }

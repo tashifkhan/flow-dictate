@@ -7,13 +7,21 @@ import SwiftUI
 /// other — see `VizPalette`.
 struct ContributionGraph: View {
     var stats: Stats
+    var requests: [CloudRequestRecord] = []
+    var metric: Metric = .words
+
+    enum Metric: String, CaseIterable, Identifiable {
+        case words = "Words", spend = "Cloud spend", calls = "Cloud calls"
+        var id: String { rawValue }
+    }
     /// Nil while nothing is hovered.
     @State private var hovered: Day?
     @Environment(\.colorScheme) private var scheme
 
     struct Day: Hashable {
         var date: Date
-        var words: Int
+        var value: Double
+        var unpricedCalls: Int = 0
         var level: Int
     }
 
@@ -30,6 +38,7 @@ struct ContributionGraph: View {
         }
         .padding(16)
         .background(.quaternary.opacity(0.35), in: .rect(cornerRadius: 12))
+        .onChange(of: metric) { hovered = nil }
     }
 
     // MARK: - Grid
@@ -83,7 +92,7 @@ struct ContributionGraph: View {
                         .strokeBorder(.primary.opacity(0.6), lineWidth: 1)
                 }
             }
-            .accessibilityLabel(Self.describe(day))
+            .accessibilityLabel(describe(day))
     }
 
     private var weekdayLabels: some View {
@@ -129,11 +138,11 @@ struct ContributionGraph: View {
     private var footer: some View {
         HStack(spacing: 10) {
             if let hovered {
-                Text(Self.describe(hovered))
+                Text(describe(hovered))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
-                Text("\(Stats.compactCount(stats.wordsByDay.values.reduce(0, +))) words in the last year")
+                Text(totalDescription)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -156,8 +165,18 @@ struct ContributionGraph: View {
     /// 53 columns of 7 days, ending on the week containing today.
     private func buildColumns() -> [[Day]] {
         let calendar = Calendar.current
-        let thresholds = stats.intensityThresholds()
         let today = calendar.startOfDay(for: .now)
+        let callsByDay = Dictionary(grouping: StatsRange.year.requests(requests), by: { calendar.startOfDay(for: $0.startedAt) })
+        var values = stats.wordsByDay.mapValues(Double.init)
+        if metric != .words {
+            values = callsByDay.mapValues { calls in
+                metric == .calls ? Double(calls.count) : CloudCostSummary(requests: calls).knownCost
+            }
+        }
+        let positive = values.values.filter { $0 > 0 }.sorted()
+        let thresholds = [0.25, 0.5, 0.75, 1.0].map { quantile in
+            positive.isEmpty ? 1 : positive[Int((Double(positive.count - 1) * quantile).rounded())]
+        }
 
         // Walk back to the most recent week boundary, then back `weeks` weeks.
         let weekday = calendar.component(.weekday, from: today) - 1
@@ -168,15 +187,36 @@ struct ContributionGraph: View {
         return (0..<weeks).map { week in
             (0..<7).compactMap { row -> Day? in
                 guard let date = calendar.date(byAdding: .day, value: week * 7 + row, to: start) else { return nil }
-                let words = date > today ? 0 : (stats.wordsByDay[date] ?? 0)
-                return Day(date: date, words: words, level: stats.level(for: words, thresholds: thresholds))
+                let value = date > today ? 0 : (values[date] ?? 0)
+                let level = value == 0 ? 0 : (thresholds.firstIndex(where: { value <= $0 }).map { $0 + 1 } ?? 4)
+                let unpriced = CloudCostSummary(requests: callsByDay[date] ?? []).unpricedCalls
+                return Day(date: date, value: value, unpricedCalls: unpriced, level: level)
             }
         }
     }
 
-    private static func describe(_ day: Day) -> String {
+    private func describe(_ day: Day) -> String {
         let date = day.date.formatted(.dateTime.month(.wide).day().year())
-        return day.words == 0 ? "No words on \(date)" : "\(day.words) words on \(date)"
+        switch metric {
+        case .words: return day.value == 0 ? "No words on \(date)" : "\(Int(day.value)) words on \(date)"
+        case .calls: return "\(Int(day.value)) cloud calls on \(date)"
+        case .spend:
+            return "\(RequestDisplay.money(day.value)) estimated spend on \(date)"
+                + (day.unpricedCalls > 0 ? " · \(day.unpricedCalls) calls with unknown cost" : "")
+        }
+    }
+
+    private var totalDescription: String {
+        let days = buildColumns().flatMap { $0 }
+        let total = days.reduce(0) { $0 + $1.value }
+        switch metric {
+        case .words: return "\(Stats.compactCount(Int(total))) words in the last year"
+        case .calls: return "\(Stats.compactCount(Int(total))) cloud calls in the last year"
+        case .spend:
+            let unknown = days.reduce(0) { $0 + $1.unpricedCalls }
+            return "\(RequestDisplay.money(total)) estimated spend in the last year"
+                + (unknown > 0 ? " · \(unknown) calls with unknown cost" : "")
+        }
     }
 
     private static let weekdaySymbols = ["", "Mon", "", "Wed", "", "Fri", ""]
