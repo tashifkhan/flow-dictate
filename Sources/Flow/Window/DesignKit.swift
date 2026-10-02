@@ -8,8 +8,10 @@ import SwiftUI
 /// for the request-detail grid, where the sixth decimal is the point.
 enum Fmt {
     /// Enough precision to tell small numbers apart, without six decimals everywhere.
-    static func money(_ value: Double?) -> String {
+    /// `column` keeps four places below a dollar, so a column of costs lines up.
+    static func money(_ value: Double?, column: Bool = false) -> String {
         guard let value else { return "Unknown" }
+        if column && value < 1 { return String(format: "$%.4f", value) }
         if value == 0 { return "$0" }
         if value < 0.0001 { return "<$0.0001" }
         if value < 0.01 { return String(format: "$%.4f", value) }
@@ -345,9 +347,11 @@ struct DeltaLabel: View {
             HStack(spacing: 2) {
                 Image(systemName: flat ? "equal" : delta > 0 ? "arrow.up.right" : "arrow.down.right")
                     .imageScale(.small)
-                Text(flat ? "Same as before" : Fmt.percent(abs(delta)) + " vs previous")
+                Text(flat ? "No change" : Fmt.percent(abs(delta)))
             }
             .font(.caption2.weight(.medium))
+            .help(flat ? "About the same as the previous period"
+                  : "\(delta > 0 ? "Up" : "Down") \(Fmt.percent(abs(delta))) on the previous period of the same length")
             .foregroundStyle(flat ? AnyShapeStyle(.secondary)
                              : AnyShapeStyle(good ? VizPalette.good(scheme) : VizPalette.critical))
         } else {
@@ -417,13 +421,29 @@ struct ChartTooltip: View {
     }
 }
 
+/// Chart chrome stays neutral gray. Hierarchical styles like `.secondary` resolve
+/// against the chart's tint inside axis marks, so these are concrete colours.
+enum ChartInk {
+    static let grid = Color.gray.opacity(0.22)
+    static let label = Color.secondary
+}
+
 extension View {
-    /// Hairline grid and quiet labels on the value axis.
-    func quietValueAxis() -> some View {
+    /// Solid hairline grid and quiet labels on the value axis.
+    func quietYAxis() -> some View {
         chartYAxis {
             AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { _ in
-                AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5)).foregroundStyle(.quaternary)
-                AxisValueLabel().foregroundStyle(.secondary)
+                AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5)).foregroundStyle(ChartInk.grid)
+                AxisValueLabel().foregroundStyle(ChartInk.label)
+            }
+        }
+    }
+
+    /// Labels only on the time axis, so vertical lines never compete with the bars.
+    func quietXAxis() -> some View {
+        chartXAxis {
+            AxisMarks(values: .automatic(desiredCount: 6)) { _ in
+                AxisValueLabel().foregroundStyle(ChartInk.label)
             }
         }
     }
