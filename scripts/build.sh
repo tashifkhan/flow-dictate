@@ -20,6 +20,19 @@ install -m 755 "$BINARY_DIR/Flow" "$APP_BUNDLE/Contents/MacOS/Flow"
 install -m 644 "$INFO_PLIST" "$APP_BUNDLE/Contents/Info.plist"
 printf 'APPL????' > "$APP_BUNDLE/Contents/PkgInfo"
 
+# actool turns the Icon Composer file into AppIcon.icns plus the Liquid Glass Assets.car.
+# It ships with Xcode, not the Command Line Tools, so a CLT-only build gets no icon.
+if xcrun --find actool >/dev/null 2>&1; then
+    xcrun actool "$APP_ICON" \
+        --compile "$APP_BUNDLE/Contents/Resources" \
+        --app-icon AppIcon \
+        --platform macosx \
+        --minimum-deployment-target 26.0 \
+        --output-partial-info-plist "$BUILD_DIR/AppIcon-partial.plist" >/dev/null
+else
+    echo "note: actool not found (needs Xcode); building without an app icon."
+fi
+
 SIGNING_IDENTITY="${FLOW_SIGNING_IDENTITY:-Flow Dev}"
 KEYCHAIN_NAME="${FLOW_KEYCHAIN_NAME:-flow-dev.keychain}"
 KEYCHAIN_PASSWORD="${FLOW_KEYCHAIN_PASSWORD:-flow-local}"
