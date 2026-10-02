@@ -31,7 +31,10 @@ struct StatsView: View {
                 TrendChart(points: series, range: range)
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 340), spacing: 16, alignment: .top)],
                           alignment: .leading, spacing: 16) {
-                    HourChart(breakdown: breakdown, caveat: keptHistoryCaveat)
+                    // Today's trend chart is already split by hour.
+                    if range != .today {
+                        HourChart(breakdown: breakdown, caveat: keptHistoryCaveat)
+                    }
                     TopApps(breakdown: breakdown, caveat: keptHistoryCaveat)
                 }
                 if usesCloud {

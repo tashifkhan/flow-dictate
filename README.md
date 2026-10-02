@@ -156,20 +156,18 @@ OpenAI-compatible transcriber models can choose **Audio transcription API** or
 previous audio endpoint. This supports general audio models in either pipeline
 without guessing capabilities from the model's name.
 
-History has separate **Raw** and **Versions** controls in both list and grid layouts.
-Raw shows untouched Apple speech recognition. Versions contains local cleanup and
-cloud results, with a copy button for each. Late results attach to the recording that
-started them. Old records retain what was saved; they cannot reconstruct missing Apple
-raw text or timing. Finished text cannot contain em dashes, even when a model ignores
-the prompt. Raw remains unchanged.
+History rows show the text, the app it went to, how long you spoke, how long the text
+took to be ready, and the cloud cost. Hovering a row shows Copy, Insert at cursor, and
+Pin. Selecting a dictation opens a details panel on the right (toolbar › Details) with
+**Inserted**, **Raw**, and **Versions** tabs. Raw shows untouched Apple speech
+recognition. Versions contains local cleanup and cloud results, with a copy button for
+each. Late results attach to the recording that started them. Old records retain what
+was saved; they cannot reconstruct missing Apple raw text or timing. Finished text
+cannot contain em dashes, even when a model ignores the prompt. Raw remains unchanged.
 
-History shows time from recording stop to final text readiness and total dictation
-time. Expand **All cloud requests** for every attempted request, including failed
-configs and retries. Each cloud version also groups the requests for its own config.
-**Statistics** combines dictation metrics and cloud accounting. Today, Last 7 Days,
-Last 30 Days, Last Year, and All Time apply to both. Daily and monthly spend
-breakdowns can filter the request list. Provider and model summaries show costs
-and measured latency/speed, while Activity can show words, cloud spend, or calls.
+The details panel also splits the dictation into speaking time and processing time
+(from recording stop to final text) and lists every cloud request, including failed
+configs and retries. Each cloud version shows the requests for its own config.
 
 Request details include provider-reported input, output, reasoning, cache and audio
 usage, request duration, first visible streamed-token latency, and generation speed.
@@ -263,9 +261,23 @@ scripts/                 build, run, install, verification, certificate, and pac
 
 ## Statistics
 
-Sidebar › Statistics. **Overview** gives WPM, Time Saved, and Total Words over a
-selectable window; **Activity** is a contribution graph of words dictated per day across
-the trailing year, with a per-day hover readout.
+Sidebar › Statistics is one page. The top card is a contribution graph of the trailing
+year, with a tooltip on each day and your current streak, longest streak, and best
+day. Under it, a range picker (Today, 7 days, 30 days, Year, All time) scopes everything
+below:
+
+- Words, dictations, speaking pace, and time saved, each with its change against the
+  previous period of the same length and a sparkline.
+- A words, dictations, or minutes chart per hour, day, week, or month, with a hover
+  readout.
+- Words by hour of day and the apps your words went to.
+- When cloud models have been used: spend, requests, success rate, and median latency;
+  spend or requests over time stacked by model (click a bar to filter the requests);
+  and sortable per-model and per-request tables. Selecting a request shows its tokens,
+  prices, and timing.
+
+Hourly and per-app numbers come from kept transcripts, so retention limits how far back
+they go. The page says so.
 
 Statistics are computed from a separate `daily_stat` aggregate table, not from the
 transcripts. That matters. Retention deletes what you said, and it should not also

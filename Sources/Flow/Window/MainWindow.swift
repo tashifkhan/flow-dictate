@@ -87,7 +87,8 @@ struct MainWindow: View {
 
                 label("All Dictations", "waveform", .blue, count: env.library.dictations.count)
                     .tag(SidebarItem.dictations)
-                Label("Statistics", systemImage: "chart.bar.xaxis")
+                label("Statistics", "chart.bar.xaxis", .green, count: todayWords, compact: true)
+                    .help("\(todayWords.formatted()) words dictated today")
                     .tag(SidebarItem.stats)
                 label("Pinned", "pin.fill", .orange, count: env.library.pinnedDictations.count)
                     .tag(SidebarItem.pinned)
@@ -124,30 +125,50 @@ struct MainWindow: View {
         .safeAreaInset(edge: .bottom) { sidebarFooter }
     }
 
-    private func label(_ title: String, _ icon: String, _ tint: Color, count: Int) -> some View {
+    /// From the daily totals, so it does not change with the search field.
+    private var todayWords: Int {
+        let today = Calendar.current.startOfDay(for: .now)
+        return env.library.dailyStats.first { $0.day == today }?.words ?? 0
+    }
+
+    private func label(_ title: String, _ icon: String, _ tint: Color, count: Int, compact: Bool = false) -> some View {
         HStack {
             Label(title, systemImage: icon)
                 .foregroundStyle(.primary)
                 .symbolRenderingMode(.hierarchical)
                 .tint(tint)
             Spacer()
-            Text("\(count)").font(.caption).foregroundStyle(.secondary).monospacedDigit()
+            Text(compact ? Stats.compactCount(count) : "\(count)")
+                .font(.caption).foregroundStyle(.secondary).monospacedDigit()
         }
     }
 
+    /// What will handle the next dictation. Clicking it opens Models.
     private var sidebarFooter: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        let waitingForKeychain = Settings.shared.cloud.useCloud
+            && Settings.shared.cloud.providers.contains(where: \.awaitingKeychainAccess)
+        let ready = env.controller.cleanupAvailability.isAvailable && !waitingForKeychain
+        return VStack(alignment: .leading, spacing: 6) {
             Divider()
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(env.controller.cleanupAvailability.isAvailable ? .green : .orange)
-                    .frame(width: 7, height: 7)
-                Text(Settings.shared.cloud.useCloud && Settings.shared.cloud.providers.contains(where: \.awaitingKeychainAccess)
-                     ? "Cloud waiting for Keychain · local ready" : env.controller.cleanupAvailability.label)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+            Button {
+                selection = .settings(.models)
+            } label: {
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill(ready ? .green : .orange)
+                        .frame(width: 7, height: 7)
+                    Text(waitingForKeychain ? "Cloud waiting for Keychain" : env.controller.cleanupAvailability.label)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                }
+                .contentShape(.rect)
             }
+            .buttonStyle(.plain)
+            .help(waitingForKeychain
+                  ? "Local dictation is ready. Approve Flow's Keychain request to use your cloud models. Click to open Models."
+                  : "Cleanup: \(env.controller.cleanupAvailability.label). Click to open Models.")
             .padding(.horizontal, 12)
             .padding(.bottom, 8)
         }
@@ -200,7 +221,7 @@ struct MainWindow: View {
                     Image(systemName: "square.grid.2x2").tag(ViewMode.grid)
                 }
                 .pickerStyle(.segmented)
-                .help("List or grid")
+                .help("Show as a list or a grid of cards")
             }
         }
         ToolbarItem(placement: .primaryAction) {
@@ -215,9 +236,12 @@ struct MainWindow: View {
         }
         ToolbarItem(placement: .primaryAction) {
             Button { env.toggleFromUI() } label: {
-                Label("Dictate", systemImage: env.controller.phase.isBusy ? "stop.circle" : "mic")
+                Label(env.controller.phase.isBusy ? "Stop" : "Dictate",
+                      systemImage: env.controller.phase.isBusy ? "stop.circle.fill" : "mic")
+                    .foregroundStyle(env.controller.phase.isBusy ? AnyShapeStyle(.red) : AnyShapeStyle(.primary))
+                    .contentTransition(.symbolEffect(.replace))
             }
-            .help("Start a dictation")
+            .help(env.controller.phase.isBusy ? "Stop and insert" : "Start a dictation (⇧⌘D)")
         }
     }
 }
