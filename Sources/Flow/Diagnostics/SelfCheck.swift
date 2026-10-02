@@ -773,6 +773,66 @@ enum SelfCheck {
         expect(Stats.humanDuration(720).value == "12", "minutes split from their unit")
         expect(Stats.humanDuration(720).unit == "m", "so the unit can be styled apart")
 
+        section("statistics over time")
+        let week = Stats.series(from: sample, range: .week, now: now)
+        expect(week.count == 8, "a 7-day range has one bar per calendar day, today included")
+        expect(week.reduce(0) { $0 + $1.words } == 80, "and every word lands in a bar")
+        expect(week.last?.words == 60, "today's words land in the last bar")
+        expect(week.filter { $0.words == 0 }.count == 6, "quiet days stay in as empty bars")
+        let yearly = Stats.series(from: sample, range: .year, now: now)
+        expect((52...54).contains(yearly.count), "a year buckets by week")
+
+        if let previous = StatsRange.week.previousWindow(at: now), let cutoff = StatsRange.week.cutoff(at: now) {
+            let span = calendar.dateComponents([.day], from: previous.start, to: previous.end).day
+            expect(previous.end == cutoff, "the previous period ends where this one starts")
+            expect(span == 8, "and is the same number of days")
+        } else {
+            expect(false, "a 7-day range has a previous period")
+        }
+        expect(StatsRange.allTime.previousWindow(at: now) == nil, "all time has nothing before it")
+        let earlier = Stats.compute(from: sample, start: nil, end: calendar.startOfDay(for: now))
+        expect(earlier.totalWords == 20, "an end bound excludes the day it names")
+
+        let streakDays: [Date: Int] = Dictionary(uniqueKeysWithValues: [1, 2, 3, 6, 7].map { offset in
+            (calendar.startOfDay(for: calendar.date(byAdding: .day, value: -offset, to: now)!), offset * 10)
+        })
+        let streaks = Stats.streaks(streakDays, today: now)
+        expect(streaks.current == 3, "a streak survives an empty today and counts back from yesterday")
+        expect(streaks.longest == 3, "the longest run is the longest consecutive stretch")
+        expect(streaks.bestWords == 70, "the best day is the biggest day")
+        expect(Stats.streaks([:], today: now) == Streaks(), "no days, no streak")
+
+        let hourlyRecords = [
+            DictationRecord(raw: "", cleaned: "a b c", appBundleID: "com.apple.Notes", appName: "Notes",
+                            createdAt: calendar.date(bySettingHour: 9, minute: 5, second: 0, of: now)!, duration: 3),
+            DictationRecord(raw: "", cleaned: "d e", appBundleID: "com.apple.Notes", appName: "Notes",
+                            createdAt: calendar.date(bySettingHour: 9, minute: 40, second: 0, of: now)!, duration: 2),
+            DictationRecord(raw: "", cleaned: "f", appBundleID: "com.tinyspeck.slackmacgap", appName: "Slack",
+                            createdAt: calendar.date(bySettingHour: 21, minute: 0, second: 0, of: now)!, duration: 1),
+        ]
+        let hours = Stats.hourly(hourlyRecords, on: now)
+        expect(hours.count == 24, "today's chart has a bar per hour")
+        expect(hours[9].words == 5 && hours[9].dictations == 2, "dictations land in their hour")
+        let breakdown = DictationBreakdown.compute(hourlyRecords, start: nil)
+        expect(breakdown.apps.map(\.name) == ["Notes", "Slack"], "apps sort by words")
+        expect(breakdown.apps.first?.dictations == 2, "and count their dictations")
+        expect(breakdown.wordsByHour[21] == 1 && breakdown.totalWords == 6, "hours and totals agree")
+        let later = calendar.date(bySettingHour: 10, minute: 0, second: 0, of: now)!
+        expect(DictationBreakdown.compute(hourlyRecords, start: later).count == 1, "a start bound drops older dictations")
+
+        section("display formatting")
+        expect(Fmt.money(0.138752) == "$0.14", "dollars round to cents")
+        expect(Fmt.money(0.001463) == "$0.0015", "fractions of a cent keep four places")
+        expect(Fmt.money(0.00001) == "<$0.0001", "tiny amounts say so instead of rounding to zero")
+        expect(Fmt.money(nil) == "Unknown", "unknown cost stays unknown")
+        expect(Fmt.count(1, "call") == "1 call", "one call is singular")
+        expect(Fmt.count(39, "call") == "39 calls", "more are plural")
+        expect(Fmt.duration(0.82) == "820ms", "short waits read in milliseconds")
+        expect(Fmt.duration(3.5) == "3.5s", "seconds keep one decimal")
+        expect(Fmt.duration(72) == "1m 12s", "minutes split out")
+        expect(Fmt.dayTitle(now) == "Today", "today's header says today")
+        expect(Fmt.dayTitle(calendar.date(byAdding: .day, value: -1, to: now)!) == "Yesterday", "and yesterday's says yesterday")
+
         section("statistics survive retention")
         do {
             let url = URL(fileURLWithPath: NSTemporaryDirectory())

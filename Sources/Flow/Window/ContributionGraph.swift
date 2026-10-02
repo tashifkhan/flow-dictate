@@ -237,6 +237,25 @@ enum VizPalette {
         let steps = scheme == .dark ? dark : light
         return Color(hex: steps[min(max(level, 0), 4)])
     }
+
+    /// Categorical hues in a fixed order. The order is what keeps neighbours apart
+    /// for colour-blind readers, so slots are assigned in sequence and never cycled.
+    /// Past the last slot a series folds into `other`.
+    static let seriesCount = 8
+    static func series(_ index: Int, scheme: ColorScheme) -> Color {
+        let light = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948"]
+        let dark  = ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9", "#e66767"]
+        let steps = scheme == .dark ? dark : light
+        return index < steps.count ? Color(hex: steps[index]) : other
+    }
+
+    /// For the series that do not get a hue of their own.
+    static let other = Color(hex: "#898781")
+
+    /// Status colours are reserved for state and always ship with an icon or label.
+    static func good(_ scheme: ColorScheme) -> Color { Color(hex: scheme == .dark ? "#0ca30c" : "#006300") }
+    static let warning = Color(hex: "#fab219")
+    static let critical = Color(hex: "#d03b3b")
 }
 
 extension Color {
