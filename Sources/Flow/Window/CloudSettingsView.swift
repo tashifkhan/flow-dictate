@@ -1,7 +1,8 @@
 import SwiftUI
 
-/// The Models pane. It reads in the order a dictation runs: where it runs, the
-/// cloud ladder from config 1 down to this Mac, then the providers behind the models.
+/// The Models pane. It reads in the order a dictation runs: a diagram of the whole
+/// route, the cloud ladder from config 1 down to this Mac, then the providers behind
+/// the models.
 struct CloudSettingsView: View {
     @State private var settings = Settings.shared
     @State private var editingProvider: ProviderSheet?
@@ -10,12 +11,18 @@ struct CloudSettingsView: View {
     var body: some View {
         Form {
             Section {
-                Picker("Process speech on", selection: $settings.cloud.useCloud) {
+                PipelineDiagram(settings: settings)
+                Picker(selection: $settings.cloud.useCloud) {
                     Text("This Mac").tag(false)
                     Text("Cloud, then this Mac").tag(true)
+                } label: {
+                    SettingLabel("Process speech on", icon: "cpu", color: .blue)
                 }
                 .pickerStyle(.segmented)
-                Toggle("Refine dictated text", isOn: $settings.cleanupEnabled)
+                Toggle(isOn: $settings.cleanupEnabled) {
+                    SettingLabel("Refine dictated text", icon: "wand.and.stars", color: .indigo)
+                }
+                .help("Remove filler and false starts, apply spoken corrections, and format lists")
             } header: {
                 Text("How Flow turns speech into text")
             } footer: {
@@ -28,10 +35,12 @@ struct CloudSettingsView: View {
             if settings.cloud.useCloud {
                 LadderSection(settings: settings, editConfig: { editingConfig = $0 })
                 Section {
-                    Toggle("Run all configs at the same time", isOn: $settings.cloud.parallelResults)
+                    Toggle(isOn: $settings.cloud.parallelResults) {
+                        SettingLabel("Run all configs at the same time", icon: "arrow.triangle.branch", color: .orange)
+                    }
                 } footer: {
                     Text(settings.cloud.parallelResults
-                         ? "Flow pastes the highest config that succeeds. Other results are saved in history and the Last dictation menu. Each cloud step and retry adds a request. Local cleanup also runs alongside cloud configs."
+                         ? "Flow pastes the highest config that succeeds and keeps the other results as versions. Every config and retry adds a request, and local cleanup runs alongside."
                          : "Flow runs one config at a time and moves down only when one fails.")
                         .font(.caption)
                 }
@@ -51,23 +60,155 @@ struct CloudSettingsView: View {
     }
 }
 
+/// Names for ladder rows and diagram nodes, shared so both say the same thing.
+@MainActor
+private struct LadderText {
+    let settings: Settings
+
+    func name(_ id: UUID?) -> String {
+        guard let id else { return "This Mac" }
+        return settings.cloud.model(id)?.displayName ?? "Deleted model"
+    }
+
+    func providerName(_ id: UUID?) -> String {
+        guard let id else { return "on device" }
+        return settings.cloud.model(id).flatMap { settings.cloud.provider($0.providerID)?.name } ?? "missing"
+    }
+
+    func summary(_ config: CloudConfig) -> String {
+        switch config.kind {
+        case .onePass: name(config.model)
+        case .twoPass: "\(name(config.transcriber)) → \(name(config.refiner))"
+        }
+    }
+
+    func detail(_ config: CloudConfig) -> String {
+        switch config.kind {
+        case .onePass: "\(providerName(config.model)) · audio in, finished text out"
+        case .twoPass: "Transcribe: \(providerName(config.transcriber)) · Refine: \(providerName(config.refiner))"
+        }
+    }
+
+    func problem(_ config: CloudConfig) -> String? {
+        if case .failure(let problem) = settings.cloud.rung(config) { return problem.message }
+        if config.kind == .onePass && !settings.cleanupEnabled { return "Needs refinement on" }
+        return nil
+    }
+}
+
+// MARK: - Route diagram
+
+/// The route a dictation takes, left to right, so the ladder reads as a path.
+private struct PipelineDiagram: View {
+    @Bindable var settings: Settings
+
+    var body: some View {
+        let text = LadderText(settings: settings)
+        let configs = settings.cloud.useCloud ? settings.cloud.configs : []
+        ScrollView(.horizontal) {
+            HStack(spacing: 4) {
+                node(title: "You speak", subtitle: "Recording", help: "Flow records while your shortcut is active") {
+                    SettingIcon(systemName: "mic.fill", color: .red)
+                }
+                ForEach(Array(configs.enumerated()), id: \.element.id) { index, config in
+                    arrow(index == 0 ? nil : settings.cloud.parallelResults ? "and" : "if it fails")
+                    let problem = text.problem(config)
+                    node(title: text.summary(config), subtitle: config.kind.title, problem: problem,
+                         help: "Config \(index + 1): \(text.detail(config))" + (problem.map { ". \($0)." } ?? "")) {
+                        Text("\(index + 1)")
+                            .font(.caption.weight(.bold).monospacedDigit())
+                            .foregroundStyle(.white)
+                            .frame(width: 22, height: 22)
+                            .background(problem == nil ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(Color.orange),
+                                        in: Circle())
+                    }
+                }
+                arrow(configs.isEmpty ? nil : "if all fail")
+                node(title: "This Mac", subtitle: settings.cleanupEnabled ? "Transcribe, then refine" : "Transcribe",
+                     help: "Apple's transcriber" + (settings.cleanupEnabled ? ", then Apple Intelligence cleanup" : "") + ". Always available, even offline.") {
+                    SettingIcon(systemName: "desktopcomputer", color: .gray)
+                }
+                arrow(nil)
+                node(title: "Your cursor", subtitle: "Inserted", help: "The finished text goes into the focused field, or the clipboard when there is none") {
+                    SettingIcon(systemName: "text.cursor", color: .green)
+                }
+            }
+            .padding(.vertical, 6)
+        }
+        .scrollIndicators(.never)
+    }
+
+    private func node<Icon: View>(title: String, subtitle: String, problem: String? = nil, help: String,
+                                  @ViewBuilder icon: () -> Icon) -> some View {
+        HStack(spacing: 8) {
+            icon()
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title).font(.callout.weight(.medium)).lineLimit(1)
+                Text(problem ?? subtitle).font(.caption2)
+                    .foregroundStyle(problem == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.orange))
+                    .lineLimit(1)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(.quaternary.opacity(0.5), in: .rect(cornerRadius: 10))
+        .overlay {
+            if problem != nil {
+                RoundedRectangle(cornerRadius: 10).strokeBorder(.orange.opacity(0.6))
+            }
+        }
+        .help(help)
+        .accessibilityElement(children: .combine)
+    }
+
+    private func arrow(_ label: String?) -> some View {
+        VStack(spacing: 1) {
+            Image(systemName: "arrow.right").font(.caption.weight(.semibold))
+            if let label { Text(label).font(.system(size: 9)) }
+        }
+        .foregroundStyle(.tertiary)
+        .frame(minWidth: 22)
+    }
+}
+
 // MARK: - Ladder
 
 private struct LadderSection: View {
     @Bindable var settings: Settings
     var editConfig: (ConfigSheet) -> Void
+    @State private var pendingRemoval: CloudConfig?
 
     private var configs: [CloudConfig] { settings.cloud.configs }
 
+    /// What each config actually did over the last week, from the request log.
+    private var recentStats: [UUID: String] {
+        let since = Date.now.addingTimeInterval(-7 * 86_400)
+        let recent = AppEnvironment.shared.library.cloudRequests.filter {
+            $0.isInference && $0.startedAt >= since && $0.configID != nil
+        }
+        return Dictionary(grouping: recent) { $0.configID! }.mapValues { calls in
+            let finished = calls.filter { $0.status != .running }
+            let succeeded = finished.filter { $0.status == .succeeded }
+            let latencies = succeeded.compactMap(\.elapsed).sorted()
+            var parts = ["Last 7 days: \(Fmt.count(calls.count, "request"))"]
+            if !finished.isEmpty { parts.append("\(Fmt.percent(Double(succeeded.count) / Double(finished.count))) ok") }
+            if !latencies.isEmpty { parts.append("\(Fmt.duration(latencies[latencies.count / 2])) median") }
+            parts.append(Fmt.money(CloudCostSummary(requests: calls).knownCost))
+            return parts.joined(separator: " · ")
+        }
+    }
+
     var body: some View {
+        let stats = recentStats
         Section {
             if configs.isEmpty {
                 Text("No cloud configs yet. Until you add one, dictation stays on this Mac.")
                     .foregroundStyle(.secondary)
             }
             ForEach(Array(configs.enumerated()), id: \.element.id) { index, config in
-                row(index: index, config: config)
+                row(index: index, config: config, stats: stats[config.id])
             }
+            .onMove { from, to in settings.cloud.configs.move(fromOffsets: from, toOffset: to) }
             HStack(spacing: 10) {
                 Image(systemName: "desktopcomputer")
                     .frame(width: 22, height: 22)
@@ -81,6 +222,7 @@ private struct LadderSection: View {
                 }
                 Spacer()
                 Image(systemName: "lock.fill").font(.caption).foregroundStyle(.tertiary)
+                    .help("The last rung always stays, so dictation works offline")
             }
             HStack(spacing: 16) {
                 Button {
@@ -88,18 +230,23 @@ private struct LadderSection: View {
                 } label: {
                     Label("Add a 1-pass config", systemImage: "plus")
                 }
+                .help("One audio model hears the recording and returns finished text")
                 Button {
                     editConfig(ConfigSheet(configID: nil, kind: .twoPass))
                 } label: {
                     Label("Add a 2-pass config", systemImage: "plus")
                 }
+                .help("One model transcribes, another cleans up the transcript")
             }
             .buttonStyle(.borderless)
         } header: {
-            Text("Cloud ladder, tried top to bottom")
+            HStack {
+                Text("Cloud ladder, tried top to bottom")
+                Spacer()
+                InfoButton(text: "1 pass uses your chosen audio model to produce finished text. 2 pass transcribes first, then sends the transcript to your chosen refiner. Both use Flow's shared cleanup policy. Either step can run on this Mac, and the cloud stages can use different providers.")
+            }
         } footer: {
             VStack(alignment: .leading, spacing: 4) {
-                Text("1 pass uses your chosen audio model to produce finished text. 2 pass transcribes first, then sends the transcript to your chosen refiner. Both use Flow's shared cleanup policy. Either step can run on this Mac, and the cloud stages can use different providers.")
                 if !NetworkStatus.shared.isOnline {
                     Label("This Mac is offline. Dictation uses the last rung until it reconnects.", systemImage: "wifi.slash")
                         .foregroundStyle(.orange)
@@ -107,73 +254,69 @@ private struct LadderSection: View {
             }
             .font(.caption)
         }
+        .confirmationDialog("Remove this config from the ladder?", isPresented: removalBinding, presenting: pendingRemoval) { config in
+            Button("Remove", role: .destructive) { settings.cloud.configs.removeAll { $0.id == config.id } }
+        } message: { _ in
+            Text("Its models stay on their providers, so you can add it back later.")
+        }
     }
 
-    private func row(index: Int, config: CloudConfig) -> some View {
-        let problem: String? = {
-            if case .failure(let problem) = settings.cloud.rung(config) { return problem.message }
-            if config.kind == .onePass && !settings.cleanupEnabled { return "Needs refinement on" }
-            return nil
-        }()
+    private var removalBinding: Binding<Bool> {
+        Binding(get: { pendingRemoval != nil }, set: { if !$0 { pendingRemoval = nil } })
+    }
+
+    private func row(index: Int, config: CloudConfig, stats: String?) -> some View {
+        let text = LadderText(settings: settings)
+        let problem = text.problem(config)
         return HStack(spacing: 10) {
             Text("\(index + 1)")
                 .font(.caption.weight(.bold).monospacedDigit())
                 .foregroundStyle(index == 0 ? AnyShapeStyle(.white) : AnyShapeStyle(.secondary))
                 .frame(width: 22, height: 22)
                 .background(index == 0 ? AnyShapeStyle(.tint) : AnyShapeStyle(.quaternary), in: Circle())
+                .help(index == 0 ? "Tried first" : "Tried when config \(index) fails")
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
-                    Text(config.kind.title)
-                        .font(.caption2.weight(.semibold))
-                        .padding(.horizontal, 5).padding(.vertical, 1)
-                        .background(.quaternary, in: .rect(cornerRadius: 4))
-                    Text(summary(config)).lineLimit(1)
+                    Chip(config.kind.title)
+                    Text(text.summary(config)).lineLimit(1)
                 }
-                Text(detail(config)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                Text(text.detail(config)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                Text(stats ?? "No requests in the last 7 days")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .monospacedDigit()
+                    .lineLimit(1)
             }
             Spacer()
             if let problem {
-                Text(problem).font(.caption).foregroundStyle(.orange).lineLimit(1)
+                Chip(problem, systemImage: "exclamationmark.triangle.fill", tint: .orange)
             }
             Button { move(index, by: -1) } label: { Image(systemName: "chevron.up") }
                 .disabled(index == 0)
                 .help("Try earlier")
+                .accessibilityLabel("Move up")
             Button { move(index, by: 1) } label: { Image(systemName: "chevron.down") }
                 .disabled(index == configs.count - 1)
                 .help("Try later")
+                .accessibilityLabel("Move down")
             Button { editConfig(ConfigSheet(configID: config.id, kind: config.kind)) } label: {
                 Image(systemName: "slider.horizontal.3")
             }
             .help("Edit config")
-            Button { settings.cloud.configs.removeAll { $0.id == config.id } } label: {
+            .accessibilityLabel("Edit config")
+            Button { pendingRemoval = config } label: {
                 Image(systemName: "xmark")
             }
             .help("Remove from the ladder. Its models stay on their providers.")
+            .accessibilityLabel("Remove config")
         }
         .buttonStyle(.borderless)
-    }
-
-    private func name(_ id: UUID?) -> String {
-        guard let id else { return "This Mac" }
-        return settings.cloud.model(id)?.displayName ?? "Deleted model"
-    }
-
-    private func providerName(_ id: UUID?) -> String {
-        guard let id else { return "on device" }
-        return settings.cloud.model(id).flatMap { settings.cloud.provider($0.providerID)?.name } ?? "missing"
-    }
-
-    private func summary(_ config: CloudConfig) -> String {
-        switch config.kind {
-        case .onePass: name(config.model)
-        case .twoPass: "\(name(config.transcriber)) → \(name(config.refiner))"
-        }
-    }
-
-    private func detail(_ config: CloudConfig) -> String {
-        switch config.kind {
-        case .onePass: "\(providerName(config.model)) · audio in, finished text out"
-        case .twoPass: "Transcribe: \(providerName(config.transcriber)) · Refine: \(providerName(config.refiner))"
+        .contextMenu {
+            Button("Edit…") { editConfig(ConfigSheet(configID: config.id, kind: config.kind)) }
+            Button("Move Up") { move(index, by: -1) }.disabled(index == 0)
+            Button("Move Down") { move(index, by: 1) }.disabled(index == configs.count - 1)
+            Divider()
+            Button("Remove", role: .destructive) { pendingRemoval = config }
         }
     }
 
@@ -345,23 +488,10 @@ private struct ProvidersSection: View {
         Section {
             ForEach(settings.cloud.providers) { provider in
                 Button { editProvider(ProviderSheet(id: provider.id)) } label: {
-                    HStack(spacing: 10) {
-                        Image(systemName: "server.rack").foregroundStyle(.secondary).frame(width: 22)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(provider.name.isEmpty ? "Unnamed provider" : provider.name)
-                            Text("\(provider.api.title) · \(URL(string: provider.baseURL)?.host ?? provider.baseURL)")
-                                .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                        }
-                        Spacer()
-                        let count = settings.cloud.models.filter { $0.providerID == provider.id }.count
-                        Text(count == 1 ? "1 model" : "\(count) models")
-                            .font(.caption).foregroundStyle(.secondary)
-                        StatusBadge(problem: provider.problem)
-                        Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
-                    }
-                    .contentShape(.rect)
+                    row(provider)
                 }
                 .buttonStyle(.plain)
+                .help("Edit \(provider.name.isEmpty ? "this provider" : provider.name), its key, and its models")
             }
             Button {
                 let provider = CloudProvider(api: .openAI, name: "New provider")
@@ -371,16 +501,68 @@ private struct ProvidersSection: View {
                 Label("Add a provider", systemImage: "plus")
             }
             .buttonStyle(.borderless)
-            Button("Reload saved keys from Keychain") {
-                Task { await settings.loadCloudKeys() }
-            }
-            .buttonStyle(.borderless)
-            .help("Opens macOS authorization if the saved key needs permission. The rest of Flow stays usable.")
         } header: {
-            Text("Providers and models")
+            HStack {
+                Text("Providers and models")
+                Spacer()
+                Menu {
+                    Button("Reload Saved Keys from Keychain") {
+                        Task { await settings.loadCloudKeys() }
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("More actions. Reloading keys opens macOS authorization if a saved key needs permission.")
+                InfoButton(text: "A provider is an endpoint and a key, and holds the models you use in configs. Name it anything, and point the base URL at any server that speaks the OpenAI, Gemini, or Anthropic API. Keys are kept in the macOS Keychain.")
+            }
         } footer: {
-            Text("A provider is an endpoint and a key, and holds the models you use in configs. Name it anything, and point the base URL at any server that speaks the OpenAI, Gemini, or Anthropic API. Keys are kept in the macOS Keychain.")
-                .font(.caption)
+            Text("Keys are kept in the macOS Keychain.").font(.caption)
+        }
+    }
+
+    private func row(_ provider: CloudProvider) -> some View {
+        let models = settings.cloud.models.filter { $0.providerID == provider.id }
+        return HStack(spacing: 10) {
+            SettingIcon(systemName: provider.api.symbol, color: provider.api.tint)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(provider.name.isEmpty ? "Unnamed provider" : provider.name)
+                Text("\(provider.api.title) · \(URL(string: provider.baseURL)?.host ?? provider.baseURL)")
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                if !models.isEmpty {
+                    HStack(spacing: 4) {
+                        ForEach(models.prefix(3)) { model in Chip(model.displayName) }
+                        if models.count > 3 { Chip("+\(models.count - 3)") }
+                    }
+                }
+            }
+            Spacer()
+            if models.isEmpty {
+                Text("No models").font(.caption).foregroundStyle(.tertiary)
+            }
+            StatusBadge(problem: provider.problem)
+            Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
+        }
+        .contentShape(.rect)
+    }
+}
+
+private extension CloudAPI {
+    var symbol: String {
+        switch self {
+        case .openAI: "circle.hexagonpath"
+        case .google: "sparkle"
+        case .anthropic: "asterisk"
+        }
+    }
+
+    var tint: Color {
+        switch self {
+        case .openAI: Color(hex: "#10a37f")
+        case .google: Color(hex: "#4285f4")
+        case .anthropic: Color(hex: "#d97757")
         }
     }
 }
