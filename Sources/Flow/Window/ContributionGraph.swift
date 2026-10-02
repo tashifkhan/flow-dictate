@@ -16,6 +16,9 @@ struct ContributionGraph: View {
     }
     /// Nil while nothing is hovered.
     @State private var hovered: Day?
+    /// How far the weeks have scrolled, so the tooltip can follow its cell.
+    @State private var scrollX: CGFloat = 0
+    @State private var tooltipSize = CGSize(width: 180, height: 50)
     @Environment(\.colorScheme) private var scheme
 
     struct Day: Hashable {
@@ -23,9 +26,11 @@ struct ContributionGraph: View {
         var value: Double
         var unpricedCalls: Int = 0
         var level: Int
+        var week = 0
+        var weekday = 0
     }
 
-    private let cell: CGFloat = 11
+    private let cell: CGFloat = 12
     private let gap: CGFloat = 3
     private let labelWidth: CGFloat = 24
     private let monthRowHeight: CGFloat = 11
@@ -34,10 +39,10 @@ struct ContributionGraph: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             grid
+                .overlay(alignment: .topLeading) { tooltip }
+                .zIndex(1)
             footer
         }
-        .padding(16)
-        .background(.quaternary.opacity(0.35), in: .rect(cornerRadius: 12))
         .onChange(of: metric) { hovered = nil }
     }
 
@@ -72,6 +77,9 @@ struct ContributionGraph: View {
                 .frame(maxWidth: .infinity)
                 .scrollIndicators(.visible, axes: .horizontal)
                 .defaultScrollAnchor(.trailing)
+                .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.x } action: { _, offset in
+                    scrollX = offset
+                }
                 .onAppear { proxy.scrollTo(columns.count - 1, anchor: .trailing) }
             }
         }
@@ -133,19 +141,48 @@ struct ContributionGraph: View {
         return Self.monthSymbols[month - 1]
     }
 
+    /// Floats just under the hovered cell, kept inside the card's width.
+    @ViewBuilder
+    private var tooltip: some View {
+        if let hovered {
+            GeometryReader { geometry in
+                let x = labelWidth + gap + CGFloat(hovered.week) * (cell + gap) - scrollX + cell / 2
+                let y = monthRowHeight + 4 + CGFloat(hovered.weekday + 1) * (cell + gap) + 4
+                let half = tooltipSize.width / 2
+                ChartTooltip(title: hovered.date.formatted(.dateTime.weekday(.wide).day().month(.wide).year()),
+                             rows: tooltipRows(hovered))
+                    .onGeometryChange(for: CGSize.self) { $0.size } action: { tooltipSize = $0 }
+                    .position(x: min(max(x, half), max(half, geometry.size.width - half)),
+                              y: y + tooltipSize.height / 2)
+            }
+            .allowsHitTesting(false)
+            .transition(.opacity)
+        }
+    }
+
+    private func tooltipRows(_ day: Day) -> [ChartTooltip.Row] {
+        switch metric {
+        case .words:
+            return [ChartTooltip.Row(label: day.value == 1 ? "word" : "words", value: Int(day.value).formatted())]
+        case .calls:
+            return [ChartTooltip.Row(label: day.value == 1 ? "cloud request" : "cloud requests",
+                                     value: Int(day.value).formatted())]
+        case .spend:
+            var rows = [ChartTooltip.Row(label: "estimated spend", value: Fmt.money(day.value))]
+            if day.unpricedCalls > 0 {
+                rows.append(ChartTooltip.Row(label: "with unknown cost", value: Fmt.count(day.unpricedCalls, "request")))
+            }
+            return rows
+        }
+    }
+
     // MARK: - Footer
 
     private var footer: some View {
         HStack(spacing: 10) {
-            if let hovered {
-                Text(describe(hovered))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else {
-                Text(totalDescription)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            Text(totalDescription)
+                .font(.caption)
+                .foregroundStyle(.secondary)
 
             Spacer()
 
@@ -190,7 +227,7 @@ struct ContributionGraph: View {
                 let value = date > today ? 0 : (values[date] ?? 0)
                 let level = value == 0 ? 0 : (thresholds.firstIndex(where: { value <= $0 }).map { $0 + 1 } ?? 4)
                 let unpriced = CloudCostSummary(requests: callsByDay[date] ?? []).unpricedCalls
-                return Day(date: date, value: value, unpricedCalls: unpriced, level: level)
+                return Day(date: date, value: value, unpricedCalls: unpriced, level: level, week: week, weekday: row)
             }
         }
     }
@@ -201,7 +238,7 @@ struct ContributionGraph: View {
         case .words: return day.value == 0 ? "No words on \(date)" : "\(Int(day.value)) words on \(date)"
         case .calls: return "\(Int(day.value)) cloud calls on \(date)"
         case .spend:
-            return "\(RequestDisplay.money(day.value)) estimated spend on \(date)"
+            return "\(Fmt.money(day.value)) estimated spend on \(date)"
                 + (day.unpricedCalls > 0 ? " · \(day.unpricedCalls) calls with unknown cost" : "")
         }
     }
@@ -214,7 +251,7 @@ struct ContributionGraph: View {
         case .calls: return "\(Stats.compactCount(Int(total))) cloud calls in the last year"
         case .spend:
             let unknown = days.reduce(0) { $0 + $1.unpricedCalls }
-            return "\(RequestDisplay.money(total)) estimated spend in the last year"
+            return "\(Fmt.money(total)) estimated spend in the last year"
                 + (unknown > 0 ? " · \(unknown) calls with unknown cost" : "")
         }
     }
@@ -237,6 +274,25 @@ enum VizPalette {
         let steps = scheme == .dark ? dark : light
         return Color(hex: steps[min(max(level, 0), 4)])
     }
+
+    /// Categorical hues in a fixed order. The order is what keeps neighbours apart
+    /// for colour-blind readers, so slots are assigned in sequence and never cycled.
+    /// Past the last slot a series folds into `other`.
+    static let seriesCount = 8
+    static func series(_ index: Int, scheme: ColorScheme) -> Color {
+        let light = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948"]
+        let dark  = ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9", "#e66767"]
+        let steps = scheme == .dark ? dark : light
+        return index < steps.count ? Color(hex: steps[index]) : other
+    }
+
+    /// For the series that do not get a hue of their own.
+    static let other = Color(hex: "#898781")
+
+    /// Status colours are reserved for state and always ship with an icon or label.
+    static func good(_ scheme: ColorScheme) -> Color { Color(hex: scheme == .dark ? "#0ca30c" : "#006300") }
+    static let warning = Color(hex: "#fab219")
+    static let critical = Color(hex: "#d03b3b")
 }
 
 extension Color {

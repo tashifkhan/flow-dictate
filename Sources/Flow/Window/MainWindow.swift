@@ -87,7 +87,8 @@ struct MainWindow: View {
 
                 label("All Dictations", "waveform", .blue, count: env.library.dictations.count)
                     .tag(SidebarItem.dictations)
-                Label("Statistics", systemImage: "chart.bar.xaxis")
+                label("Statistics", "chart.bar.xaxis", .green, count: todayWords, compact: true)
+                    .help("\(todayWords.formatted()) words dictated today")
                     .tag(SidebarItem.stats)
                 label("Pinned", "pin.fill", .orange, count: env.library.pinnedDictations.count)
                     .tag(SidebarItem.pinned)
@@ -103,53 +104,26 @@ struct MainWindow: View {
             Section("Scratchpad") {
                 label("All Notes", "square.and.pencil", .purple, count: env.library.notes.count)
                     .tag(SidebarItem.notes)
-
-                // Grouped by day, newest first.
-                ForEach(env.library.notesByDay(), id: \.day) { group in
-                    DisclosureGroup {
-                        ForEach(group.notes) { note in
-                            Label(note.displayTitle, systemImage: note.pinned ? "pin.fill" : "doc.text")
-                                .lineLimit(1)
-                                .tag(SidebarItem.note(note.id))
-                        }
-                    } label: {
-                        Text(group.day.formatted(.dateTime.weekday(.wide).month().day()))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
             }
         }
         .navigationSplitViewColumnWidth(min: 200, ideal: 230, max: 300)
-        .safeAreaInset(edge: .bottom) { sidebarFooter }
     }
 
-    private func label(_ title: String, _ icon: String, _ tint: Color, count: Int) -> some View {
+    /// From the daily totals, so it does not change with the search field.
+    private var todayWords: Int {
+        let today = Calendar.current.startOfDay(for: .now)
+        return env.library.dailyStats.first { $0.day == today }?.words ?? 0
+    }
+
+    private func label(_ title: String, _ icon: String, _ tint: Color, count: Int, compact: Bool = false) -> some View {
         HStack {
             Label(title, systemImage: icon)
                 .foregroundStyle(.primary)
                 .symbolRenderingMode(.hierarchical)
                 .tint(tint)
             Spacer()
-            Text("\(count)").font(.caption).foregroundStyle(.secondary).monospacedDigit()
-        }
-    }
-
-    private var sidebarFooter: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Divider()
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(env.controller.cleanupAvailability.isAvailable ? .green : .orange)
-                    .frame(width: 7, height: 7)
-                Text(Settings.shared.cloud.useCloud && Settings.shared.cloud.providers.contains(where: \.awaitingKeychainAccess)
-                     ? "Cloud waiting for Keychain · local ready" : env.controller.cleanupAvailability.label)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-            .padding(.horizontal, 12)
-            .padding(.bottom, 8)
+            Text(compact ? Stats.compactCount(count) : "\(count)")
+                .font(.caption).foregroundStyle(.secondary).monospacedDigit()
         }
     }
 
@@ -200,7 +174,7 @@ struct MainWindow: View {
                     Image(systemName: "square.grid.2x2").tag(ViewMode.grid)
                 }
                 .pickerStyle(.segmented)
-                .help("List or grid")
+                .help("Show as a list or a grid of cards")
             }
         }
         ToolbarItem(placement: .primaryAction) {
@@ -215,9 +189,12 @@ struct MainWindow: View {
         }
         ToolbarItem(placement: .primaryAction) {
             Button { env.toggleFromUI() } label: {
-                Label("Dictate", systemImage: env.controller.phase.isBusy ? "stop.circle" : "mic")
+                Label(env.controller.phase.isBusy ? "Stop" : "Dictate",
+                      systemImage: env.controller.phase.isBusy ? "stop.circle.fill" : "mic")
+                    .foregroundStyle(env.controller.phase.isBusy ? AnyShapeStyle(.red) : AnyShapeStyle(.primary))
+                    .contentTransition(.symbolEffect(.replace))
             }
-            .help("Start a dictation")
+            .help(env.controller.phase.isBusy ? "Stop and insert" : "Start a dictation (⇧⌘D)")
         }
     }
 }
