@@ -104,25 +104,9 @@ struct MainWindow: View {
             Section("Scratchpad") {
                 label("All Notes", "square.and.pencil", .purple, count: env.library.notes.count)
                     .tag(SidebarItem.notes)
-
-                // Grouped by day, newest first.
-                ForEach(env.library.notesByDay(), id: \.day) { group in
-                    DisclosureGroup {
-                        ForEach(group.notes) { note in
-                            Label(note.displayTitle, systemImage: note.pinned ? "pin.fill" : "doc.text")
-                                .lineLimit(1)
-                                .tag(SidebarItem.note(note.id))
-                        }
-                    } label: {
-                        Text(group.day.formatted(.dateTime.weekday(.wide).month().day()))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
             }
         }
         .navigationSplitViewColumnWidth(min: 200, ideal: 230, max: 300)
-        .safeAreaInset(edge: .bottom) { sidebarFooter }
     }
 
     /// From the daily totals, so it does not change with the search field.
@@ -140,37 +124,6 @@ struct MainWindow: View {
             Spacer()
             Text(compact ? Stats.compactCount(count) : "\(count)")
                 .font(.caption).foregroundStyle(.secondary).monospacedDigit()
-        }
-    }
-
-    /// What will handle the next dictation. Clicking it opens Models.
-    private var sidebarFooter: some View {
-        let waitingForKeychain = Settings.shared.cloud.useCloud
-            && Settings.shared.cloud.providers.contains(where: \.awaitingKeychainAccess)
-        let ready = env.controller.cleanupAvailability.isAvailable && !waitingForKeychain
-        return VStack(alignment: .leading, spacing: 6) {
-            Divider()
-            Button {
-                selection = .settings(.models)
-            } label: {
-                HStack(spacing: 8) {
-                    Circle()
-                        .fill(ready ? .green : .orange)
-                        .frame(width: 7, height: 7)
-                    Text(waitingForKeychain ? "Cloud waiting for Keychain" : env.controller.cleanupAvailability.label)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                    Spacer(minLength: 0)
-                }
-                .contentShape(.rect)
-            }
-            .buttonStyle(.plain)
-            .help(waitingForKeychain
-                  ? "Local dictation is ready. Approve Flow's Keychain request to use your cloud models. Click to open Models."
-                  : "Cleanup: \(env.controller.cleanupAvailability.label). Click to open Models.")
-            .padding(.horizontal, 12)
-            .padding(.bottom, 8)
         }
     }
 
