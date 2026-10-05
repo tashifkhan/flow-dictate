@@ -50,6 +50,8 @@ struct StatsView: View {
         }
         .frame(maxWidth: .infinity)
         .navigationTitle("Statistics")
+        .toolbarBackground(.ultraThinMaterial, for: .windowToolbar)
+        .toolbarBackgroundVisibility(.visible, for: .windowToolbar)
     }
 
     /// Per-app and per-hour numbers come from transcripts, which retention deletes.
