@@ -61,6 +61,7 @@ the Dock icon visible all the time.
 ```sh
 scripts/check.sh
 scripts/check-cloud.sh        # localhost provider protocol fixtures
+FLOW_ELECTRON_PATH=/path/to/Electron scripts/check-electron.sh # isolated desktop editor fixture
 ```
 
 Checks covering the SQLite store, retention, search, record derivation, statistics,
@@ -196,8 +197,9 @@ Voice commands ride the same round trip as ordinary dictation: "scratch that",
 "replace X with Y", "new paragraph".
 
 Finished writing streams into the focused field as the model generates it. Native
-fields use Accessibility edits; readable browser and Electron fields use Unicode
-key events so the app receives input events. Flow checks the field and caret before
+fields use Accessibility edits; readable browser and Electron fields use real
+paste events so the editor receives each complete chunk. Flow restores the clipboard
+after the field confirms the edit. Flow checks the field and caret before
 each update. If you move focus or edit the text, it stops updating the field and
 shows the remaining response in the pill. Escape restores the original selection
 when the draft is still unchanged and focused. The final result reconciles the draft
@@ -206,8 +208,13 @@ with cleanup, replacement rules, and list numbering.
 If the field cannot support tracked updates, the pill expands to show the live
 response and Flow uses its existing paste path once generation finishes. With no
 editable field, it copies the finished response and collapses to the clipboard icon.
-Providers that reject streaming still return a finished response through the same
-delivery path.
+Streaming is automatic per provider, endpoint, and model. If a server rejects
+streaming or returns ordinary JSON, Flow remembers that during the session and
+uses complete responses for that route. Settings > Cloud > provider > Streaming
+can turn streaming Off explicitly. Recheck streaming support clears the learned
+support for that provider. Optional usage or reasoning parameters that a server
+rejects do not prevent it from streaming text. Complete responses use the regular
+insertion path, and the pill expands only when partial text actually arrives.
 
 Settings › Vocabulary includes saved name, email, phone, company, and address fields.
 Say "add my email here" to insert your saved email, or include "my email" in a sentence

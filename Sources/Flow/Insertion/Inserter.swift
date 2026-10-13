@@ -295,9 +295,23 @@ final class Inserter {
     /// synthetic keystroke is the fallback, and only when the menu press was never sent.
     /// The old clipboard comes back only if nothing else was copied in the meantime.
     private func paste(_ text: String, into pid: pid_t) throws {
+        let restore = try pasteForStreaming(text, into: pid)
+        Task {
+            try? await Task.sleep(for: Self.clipboardRestoreDelay)
+            restore()
+        }
+    }
+
+    /// Streaming waits for the field to consume the paste before restoring the
+    /// clipboard. Each confirmed chunk finishes its transaction before the next.
+    func pasteForStreaming(_ text: String, into pid: pid_t) throws -> () -> Void {
         let pasteboard = NSPasteboard.general
         let snapshot = ClipboardSnapshot(pasteboard)
         guard let owned = Self.stageTransient(text, on: pasteboard) else { throw InsertError.clipboardUnavailable }
+        var dispatched = false
+        defer {
+            if !dispatched { snapshot.restore(to: pasteboard, onlyIfUnchangedSince: owned) }
+        }
 
         // Pressing our own menu over AX from the main thread would wait on itself.
         let menuPaste = pid > 0 && pid != ProcessInfo.processInfo.processIdentifier
@@ -312,8 +326,8 @@ final class Inserter {
             try synthesize(keyCode: CGKeyCode(kVK_ANSI_V), flags: .maskCommand)
         }
 
-        Task { [snapshot] in
-            try? await Task.sleep(for: Self.clipboardRestoreDelay)
+        dispatched = true
+        return {
             snapshot.restore(to: NSPasteboard.general, onlyIfUnchangedSince: owned)
         }
     }
@@ -334,6 +348,20 @@ final class Inserter {
         for _ in 0..<min(count, 2000) {
             try synthesize(keyCode: CGKeyCode(kVK_Delete), flags: [])
         }
+    }
+
+    func deleteStreamingSelection() -> Bool {
+        do {
+            try synthesize(keyCode: CGKeyCode(kVK_Delete), flags: [])
+            return true
+        } catch { return false }
+    }
+
+    func selectAllForStreaming() -> Bool {
+        do {
+            try synthesize(keyCode: CGKeyCode(kVK_ANSI_A), flags: .maskCommand)
+            return true
+        } catch { return false }
     }
 
     private func synthesize(keyCode: CGKeyCode, flags: CGEventFlags) throws {

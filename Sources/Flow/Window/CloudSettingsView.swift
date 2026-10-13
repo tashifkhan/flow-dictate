@@ -663,6 +663,15 @@ private struct ProviderEditor: View {
                     test = .idle
                 }
             Toggle("Use this provider", isOn: provider.enabled)
+            Picker("Streaming", selection: provider.streaming) {
+                ForEach(CloudStreaming.allCases) { mode in Text(mode.title).tag(mode) }
+            }
+            .help("Automatic uses streaming when the endpoint supports it. Off always waits for the complete response.")
+            Button("Recheck streaming support") {
+                AppEnvironment.shared.controller.resetStreamingSupport(providerID: providerID)
+            }
+            .disabled(provider.wrappedValue.streaming == .disabled)
+            .help("Forget streaming support learned for this provider during this session.")
             HStack {
                 Button("Test connection") { runTest(provider.wrappedValue) }
                     .disabled(test == .running)

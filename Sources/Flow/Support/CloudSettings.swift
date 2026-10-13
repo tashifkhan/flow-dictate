@@ -51,6 +51,12 @@ enum CloudAudioInput: String, CaseIterable, Codable, Identifiable, Sendable {
     }
 }
 
+enum CloudStreaming: String, CaseIterable, Codable, Identifiable, Sendable {
+    case automatic, disabled
+    var id: String { rawValue }
+    var title: String { self == .automatic ? "Automatic" : "Off" }
+}
+
 struct CloudProvider: Codable, Identifiable, Sendable {
     var id = UUID()
     var name: String
@@ -59,6 +65,7 @@ struct CloudProvider: Codable, Identifiable, Sendable {
     var baseURL: String
     var apiKey = ""
     var pricingProviderID = ""
+    var streaming: CloudStreaming = .automatic
     var awaitingKeychainAccess = false
 
     init(api: CloudAPI, name: String? = nil) {
@@ -67,7 +74,7 @@ struct CloudProvider: Codable, Identifiable, Sendable {
         self.baseURL = api.defaultBaseURL
     }
 
-    enum CodingKeys: String, CodingKey { case id, name, api, enabled, baseURL, pricingProviderID }
+    enum CodingKeys: String, CodingKey { case id, name, api, enabled, baseURL, pricingProviderID, streaming }
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -77,6 +84,7 @@ struct CloudProvider: Codable, Identifiable, Sendable {
         enabled = try values.decode(Bool.self, forKey: .enabled)
         baseURL = try values.decode(String.self, forKey: .baseURL)
         pricingProviderID = try values.decodeIfPresent(String.self, forKey: .pricingProviderID) ?? ""
+        streaming = try values.decodeIfPresent(CloudStreaming.self, forKey: .streaming) ?? .automatic
     }
 
     var isLocalhost: Bool {

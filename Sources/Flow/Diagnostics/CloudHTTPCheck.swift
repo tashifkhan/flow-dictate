@@ -34,9 +34,12 @@ enum CloudHTTPCheck {
         let id = UUID()
         let job = CloudService.Job(dictationID: id, audio: Data(), localRaw: "Hello world", refine: true, language: .system, parallel: false)
         var checks: [String: Bool] = [:]
-        func rung(_ api: CloudAPI, _ model: String) -> CloudRung {
+        func rung(_ api: CloudAPI, _ model: String, streaming: CloudStreaming = .automatic,
+                  reasoning: CloudReasoning = .automatic) -> CloudRung {
             var provider = CloudProvider(api: api); provider.baseURL = baseURL; provider.enabled = true
-            let route = CloudRoute(provider: provider, model: CloudModel(providerID: provider.id, name: model, modelID: model))
+            provider.streaming = streaming
+            let route = CloudRoute(provider: provider, model: CloudModel(providerID: provider.id, name: model,
+                                                                         modelID: model, reasoning: reasoning))
             return CloudRung(step: .twoPass(transcriber: nil, refiner: route))
         }
         for api in [CloudAPI.openAI, .google, .anthropic] {
@@ -75,8 +78,68 @@ enum CloudHTTPCheck {
         let retryResult = await service.run([retry], job: job, makeContext: { _ in context }, progress: { _ in }, late: { _ in })
         let retries = collector.requests.filter { $0.configID == retry.id }
         checks["stream fallback logs two attempts"] = retryResult?.text == "Hello world."
-            && retries.count == 2 && retries.contains { $0.status == .failed && $0.httpStatus == 400 }
+            && retries.count == 2 && retries.contains { $0.status == .failed && $0.httpStatus == 501 }
         checks["JSON never fabricates first token latency"] = retries.first { $0.status == .succeeded }?.firstTokenLatency == nil
+        let retryAgain = await service.run([retry], job: job, makeContext: { _ in context }, progress: { _ in }, late: { _ in })
+        checks["unsupported streaming is remembered per route"] = retryAgain?.text == "Hello world."
+            && collector.requests.filter { $0.configID == retry.id }.count == 3
+        await service.resetStreamingSupport(providerID: retry.routes[0].provider.id)
+        _ = await service.run([retry], job: job, makeContext: { _ in context }, progress: { _ in }, late: { _ in })
+        checks["support can be rechecked"] = collector.requests.filter { $0.configID == retry.id }.count == 5
+        var supportedModel = retry.routes[0]
+        supportedModel.model.modelID = "supported-same-provider"
+        let supportedRung = CloudRung(step: .twoPass(transcriber: nil, refiner: supportedModel))
+        collector.clearPreviews()
+        _ = await service.run([supportedRung], job: job, makeContext: { _ in context }, progress: { _ in }, late: { _ in },
+                              preview: { collector.preview($0) })
+        checks["one unsupported model does not disable another model"] = collector.previews.contains("Hello")
+        for api in [CloudAPI.google, .anthropic] {
+            let route = rung(api, "reject-stream-" + api.rawValue)
+            collector.clearPreviews()
+            let response = await service.run([route], job: job, makeContext: { _ in context }, progress: { _ in }, late: { _ in },
+                                              preview: { collector.preview($0) })
+            checks["\(api.rawValue) unsupported stream uses a direct response"] = response?.text == "Hello world."
+                && collector.previews.isEmpty && collector.requests.filter { $0.configID == route.id }.count == 2
+        }
+        let ignored = rung(.openAI, "ignore-stream")
+        collector.clearPreviews()
+        for _ in 0..<2 {
+            _ = await service.run([ignored], job: job, makeContext: { _ in context }, progress: { _ in }, late: { _ in },
+                                  preview: { collector.preview($0) })
+        }
+        checks["JSON responses to streaming requests never publish partials"] = collector.previews.isEmpty
+        for api in [CloudAPI.openAI, .google, .anthropic] {
+            collector.clearPreviews()
+            let off = rung(api, "disabled-" + api.rawValue, streaming: .disabled)
+            let complete = await service.run([off], job: job, makeContext: { _ in context }, progress: { _ in }, late: { _ in },
+                                             preview: { collector.preview($0) })
+            checks["\(api.rawValue) Off buffers even unsolicited SSE"] = complete?.text == "Hello world."
+                && collector.previews.isEmpty
+        }
+        collector.clearPreviews()
+        let options = rung(.openAI, "reject-usage-options")
+        for _ in 0..<2 {
+            _ = await service.run([options], job: job, makeContext: { _ in context }, progress: { _ in }, late: { _ in },
+                                  preview: { collector.preview($0) })
+        }
+        checks["optional usage rejection preserves streaming and is remembered"] = collector.previews.contains("Hello")
+            && collector.requests.filter { $0.configID == options.id }.count == 3
+        collector.clearPreviews()
+        let reasoning = rung(.openAI, "reject-reasoning", reasoning: .high)
+        _ = await service.run([reasoning], job: job, makeContext: { _ in context }, progress: { _ in }, late: { _ in },
+                              preview: { collector.preview($0) })
+        checks["reasoning rejection does not disable streaming"] = collector.previews.contains("Hello")
+        if let (requestData, _) = try? await URLSession.shared.data(from: URL(string: baseURL + "/fixture-requests")!),
+           let sent = try? JSONSerialization.jsonObject(with: requestData) as? [[String: Any]] {
+            let offRequests = sent.filter { ($0["model"] as? String)?.hasPrefix("disabled-") == true }
+            checks["Off omits streaming bodies, endpoints, and Accept headers"] = offRequests.count == 3
+                && offRequests.allSatisfy { $0["stream"] as? Bool == false && $0["accept"] as? String != "text/event-stream" }
+            checks["Off explicitly disables streaming in compatible JSON APIs"] = offRequests
+                .filter { $0["model"] as? String != "disabled-google" }.allSatisfy { $0["streamField"] as? Bool == false }
+            let ignoredRequests = sent.filter { $0["model"] as? String == "ignore-stream" }
+            checks["ignored streaming switches the next request to direct JSON"] = ignoredRequests.count == 2
+                && ignoredRequests[0]["stream"] as? Bool == true && ignoredRequests[1]["stream"] as? Bool == false
+        } else { checks["fixture request metadata is available"] = false }
         let failed = rung(.openAI, "failed")
         let fallback = rung(.openAI, "fallback")
         let fallbackResult = await service.run([failed, fallback], job: job, makeContext: { _ in context }, progress: { _ in }, late: { _ in })

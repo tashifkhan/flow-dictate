@@ -1,6 +1,6 @@
 import AppKit
 import ApplicationServices
-import Carbon.HIToolbox
+import OSLog
 
 struct StreamingFieldState: Equatable {
     var text: String
@@ -10,8 +10,19 @@ struct StreamingFieldState: Equatable {
 
 @MainActor
 protocol StreamingTextField: AnyObject {
+    var canExposeEmptyParagraph: Bool { get }
+    func prepareForEdit() async
     func read() -> StreamingFieldState?
     func replace(location: Int, length: Int, with text: String) -> Bool
+    func replaceEntireDraft(with text: String) -> Bool?
+    func finishEdit()
+}
+
+extension StreamingTextField {
+    var canExposeEmptyParagraph: Bool { false }
+    func prepareForEdit() async {}
+    func finishEdit() {}
+    func replaceEntireDraft(with text: String) -> Bool? { nil }
 }
 
 @MainActor
@@ -29,16 +40,20 @@ final class ClosureStreamingTextField: StreamingTextField {
 @MainActor
 struct StreamingFocus {
     private let pid: pid_t
-    private let element: AXUIElement
+    private let element: AXUIElement?
     init?(app: FrontApp) {
-        guard app.hasTextTarget, !app.isSecure, app.processID > 0,
-              let element = FrontApp.focusedElement(pid: app.processID) else { return nil }
+        guard app.hasTextTarget, !app.isSecure, app.processID > 0 else { return nil }
+        let element = FrontApp.focusedElement(pid: app.processID)
+        guard element != nil || FrontApp.isZed(app.bundleID) else { return nil }
         pid = app.processID
         self.element = element
     }
     var isCurrent: Bool {
-        guard FrontApp.systemFocus()?.appPID == pid,
-              let current = FrontApp.focusedElement(pid: pid) else { return false }
+        guard FrontApp.systemFocus()?.appPID == pid else { return false }
+        let current = FrontApp.focusedElement(pid: pid)
+        // Zed exposes its editor only as a window, sometimes with no element at all.
+        guard let element else { return current == nil }
+        guard let current else { return false }
         return CFEqual(element, current)
     }
 }
@@ -55,6 +70,9 @@ final class StreamingInsertion {
     private(set) var didWrite = false
     private var pending: Task<Bool, Never>?
     private var cancelled = false
+    private var awaitingConfirmation = false
+    private var pendingEmptyParagraph = false
+    private var ownsWholeRichEditor: Bool
 
     init?(field: any StreamingTextField) {
         guard let state = field.read(), state.location >= 0, state.length >= 0,
@@ -62,6 +80,7 @@ final class StreamingInsertion {
         self.field = field
         original = state
         expected = state
+        ownsWholeRichEditor = field.canExposeEmptyParagraph && state.text.isEmpty && state.location == 0 && state.length == 0
     }
 
     static func capture(in app: FrontApp) -> StreamingInsertion? {
@@ -84,7 +103,16 @@ final class StreamingInsertion {
     func invalidate() { cancelled = true }
 
     private func write(_ next: String) async -> Bool {
-        guard !detached, field.read() == expected else { detached = true; return false }
+        // A slow renderer may confirm after the polling deadline. Resume only
+        // when both its exact text and selection still match the edit we sent.
+        if awaitingConfirmation, confirmsExpectedState() {
+            detached = false
+            awaitingConfirmation = false
+        }
+        guard !detached else { return false }
+        await field.prepareForEdit()
+        guard !cancelled else { return false }
+        guard field.read() == expected else { detached = true; return false }
         if !didWrite, next.isEmpty { return true }
         if didWrite, next == text { return true }
         // Preserve the common prefix so each new token normally appends at the caret.
@@ -94,23 +122,63 @@ final class StreamingInsertion {
         let location = original.location + prefixText.utf16.count
         let length = didWrite ? text.utf16.count - prefixText.utf16.count : original.length
         let mutable = NSMutableString(string: expected.text)
-        mutable.replaceCharacters(in: NSRange(location: location, length: length), with: suffix)
+        if ownsWholeRichEditor { mutable.setString(next) }
+        else { mutable.replaceCharacters(in: NSRange(location: location, length: length), with: suffix) }
         let after = StreamingFieldState(text: mutable as String,
                                        location: original.location + next.utf16.count, length: 0)
-        guard field.replace(location: location, length: length, with: suffix) else {
+        let emptyParagraph = field.canExposeEmptyParagraph
+            && original.text == "\n" && original.location == 0 && original.length == 0
+        let replaced = ownsWholeRichEditor
+            ? field.replaceEntireDraft(with: next) ?? field.replace(location: 0, length: expected.text.utf16.count, with: next)
+            : field.replace(location: location, length: length, with: suffix)
+        guard replaced else {
             detached = true
             return false
         }
+        defer { field.finishEdit() }
         // The app may publish its AX value a few milliseconds after the edit.
         expected = after
+        pendingEmptyParagraph = emptyParagraph
         text = next
         didWrite = true
-        for attempt in 0..<10 {
-            if field.read() == after { return true }
-            if attempt < 9 { try? await Task.sleep(for: .milliseconds(20)) }
+        for attempt in 0..<51 {
+            if confirmsExpectedState() { return true }
+            if attempt < 50 { try? await Task.sleep(for: .milliseconds(20)) }
         }
         detached = true
+        awaitingConfirmation = true
         return false
+    }
+
+    private func confirmsExpectedState() -> Bool {
+        guard let actual = field.read() else { return false }
+        if actual == expected { pendingEmptyParagraph = false; return true }
+        if ownsWholeRichEditor, actual.length == 0 {
+            // Rich editors count paragraph separators differently in AXValue and
+            // AXSelectedTextRange. We own the whole initially empty editor and
+            // use its select-all command, so subsequent edits need no guessed offsets.
+            let bodyMatches = actual.text == expected.text || actual.text == expected.text + "\n"
+                || (expected.text.hasSuffix("\n") && actual.text == String(expected.text.dropLast()))
+            let paragraphCount = expected.text.filter { $0 == "\n" }.count
+            if bodyMatches, actual.location == expected.location
+                || actual.location == expected.location - paragraphCount {
+                expected = actual
+                pendingEmptyParagraph = false
+                return true
+            }
+        }
+        // A rich editor's placeholder paragraph can disappear on the first
+        // paste and reappear after a full rewrite. Allow only one trailing LF
+        // to change, only in an originally empty field, with the exact caret.
+        guard pendingEmptyParagraph,
+              actual.location == expected.location, actual.length == expected.length else { return false }
+        let removed = expected.text.hasSuffix("\n") && actual.text == String(expected.text.dropLast())
+        let added = actual.text == expected.text + "\n"
+        guard removed || added else { return false }
+        if removed { ownsWholeRichEditor = true }
+        expected = actual
+        pendingEmptyParagraph = false
+        return true
     }
 
     /// Restore the user's original selection only while our draft still owns it.
@@ -127,33 +195,43 @@ final class StreamingInsertion {
 
     private func restore() async -> Bool {
         guard didWrite else { return !detached }
-        guard !detached, field.read() == expected else { detached = true; return false }
+        await field.prepareForEdit()
+        if awaitingConfirmation, confirmsExpectedState() { detached = false; awaitingConfirmation = false }
+        guard field.read() == expected else { detached = true; return false }
         let selected = (original.text as NSString).substring(with: NSRange(location: original.location, length: original.length))
-        guard field.replace(location: original.location, length: text.utf16.count, with: selected) else {
+        let replaced = ownsWholeRichEditor
+            ? field.replaceEntireDraft(with: selected) ?? field.replace(location: 0, length: expected.text.utf16.count, with: selected)
+            : field.replace(location: original.location, length: text.utf16.count, with: selected)
+        guard replaced else {
             detached = true
             return false
         }
+        defer { field.finishEdit() }
         let restored = StreamingFieldState(text: original.text,
                                             location: original.location + original.length, length: 0)
         expected = restored
         text = ""
         didWrite = false
-        for attempt in 0..<10 {
+        for attempt in 0..<51 {
             if field.read() == restored { return true }
-            if attempt < 9 { try? await Task.sleep(for: .milliseconds(20)) }
+            if attempt < 50 { try? await Task.sleep(for: .milliseconds(20)) }
         }
         detached = true
         return false
     }
 }
 
-/// Native fields use AXSelectedText. Web and Electron fields receive Unicode key
-/// events so their input handlers run, without repeatedly borrowing the clipboard.
+/// Native fields use AXSelectedText. Web and Electron fields use real paste events
+/// so the editor receives the entire chunk and runs its input handlers.
 @MainActor
 private final class AccessibilityStreamingField: StreamingTextField {
     private let app: FrontApp
     private let element: AXUIElement
-    private let usesKeyEvents: Bool
+    private let usesPaste: Bool
+    private let inserter = Inserter()
+    private var restoreClipboard: (() -> Void)?
+    private let log = Logger(subsystem: "sh.taf.flow", category: "insert")
+    var canExposeEmptyParagraph: Bool { usesPaste && (app.isWebContent || app.isElectron) }
 
     init?(app: FrontApp) {
         guard app.processID > 0, let element = FrontApp.focusedElement(pid: app.processID) else { return nil }
@@ -162,8 +240,8 @@ private final class AccessibilityStreamingField: StreamingTextField {
               settable.boolValue else { return nil }
         self.app = app
         self.element = element
-        usesKeyEvents = app.isWebContent || app.prefersClipboardPaste
-        if !usesKeyEvents {
+        usesPaste = app.isWebContent || app.prefersClipboardPaste
+        if !usesPaste {
             guard AXUIElementIsAttributeSettable(element, kAXSelectedTextAttribute as CFString, &settable) == .success,
                   settable.boolValue else { return nil }
         }
@@ -177,42 +255,49 @@ private final class AccessibilityStreamingField: StreamingTextField {
         guard AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, &value) == .success,
               let value, CFGetTypeID(value) == AXValueGetTypeID() else { return nil }
         var range = CFRange()
-        guard AXValueGetValue(value as! AXValue, .cfRange, &range) else { return nil }
+        guard AXValueGetValue(value as! AXValue, .cfRange, &range),
+              range.location >= 0, range.length >= 0, range.location <= text.utf16.count,
+              range.length <= text.utf16.count - range.location else { return nil }
         return StreamingFieldState(text: text, location: range.location, length: range.length)
     }
 
+    func prepareForEdit() async {
+        if usesPaste { await inserter.waitForModifierRelease() }
+    }
+
     func replace(location: Int, length: Int, with text: String) -> Bool {
-        guard read() != nil else { return false }
+        guard read() != nil else { log.notice("stream field unavailable before edit"); return false }
+        guard !usesPaste || !Inserter.modifiersAreHeld else { log.notice("stream edit blocked by held modifiers"); return false }
         var range = CFRange(location: location, length: length)
-        guard let value = AXValueCreate(.cfRange, &range),
-              AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, value) == .success else { return false }
-        if !usesKeyEvents {
+        guard let value = AXValueCreate(.cfRange, &range) else { return false }
+        let selected = AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, value)
+        guard selected == .success else {
+            log.notice("stream selection failed: \(selected.rawValue, privacy: .public)")
+            return false
+        }
+        if !usesPaste {
             return AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, text as CFString) == .success
         }
-        guard !Inserter.modifiersAreHeld, let source = CGEventSource(stateID: .combinedSessionState) else { return false }
-        // Unicode events have a bounded payload. Character slices keep emoji intact.
-        var remaining = text[...]
-        repeat {
-            let piece = String(remaining.prefix(8))
-            remaining = remaining.dropFirst(piece.count)
-            let key = text.isEmpty ? CGKeyCode(kVK_Delete) : CGKeyCode(0)
-            guard let down = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: true),
-                  let up = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: false) else { return false }
-            if !piece.isEmpty {
-                let units = Array(piece.utf16)
-                units.withUnsafeBufferPointer { buffer in
-                    down.keyboardSetUnicodeString(stringLength: buffer.count, unicodeString: buffer.baseAddress!)
-                    up.keyboardSetUnicodeString(stringLength: buffer.count, unicodeString: buffer.baseAddress!)
-                }
-            }
-            for event in [down, up] {
-                event.flags = []
-                event.setIntegerValueField(.eventSourceUserData, value: Inserter.eventMarker)
-            }
-            down.postToPid(app.processID)
-            usleep(12_000)
-            up.postToPid(app.processID)
-        } while !remaining.isEmpty
-        return true
+        do {
+            // Pasting an empty string does not delete a selection in Chromium.
+            if text.isEmpty { return inserter.deleteStreamingSelection() }
+            restoreClipboard = try inserter.pasteForStreaming(text, into: app.processID)
+            return true
+        } catch { return false }
+    }
+
+    func replaceEntireDraft(with text: String) -> Bool? {
+        guard usesPaste else { return nil }
+        guard read() != nil, !Inserter.modifiersAreHeld, inserter.selectAllForStreaming() else { return false }
+        do {
+            if text.isEmpty { return inserter.deleteStreamingSelection() }
+            restoreClipboard = try inserter.pasteForStreaming(text, into: app.processID)
+            return true
+        } catch { return false }
+    }
+
+    func finishEdit() {
+        restoreClipboard?()
+        restoreClipboard = nil
     }
 }

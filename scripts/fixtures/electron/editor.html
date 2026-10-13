@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>Flow insertion fixture</title>
+<style>textarea, [contenteditable] { width: 95%; height: 150px; white-space: pre-wrap; }</style>
+<textarea id="plain"></textarea>
+<div id="rich" contenteditable="true" role="textbox" aria-multiline="true" hidden></div>
+<script>
+let editor = plain, revision = '', inputs = 0, pastes = 0, saved = '';
+for (const field of [plain, rich]) {
+  field.addEventListener('paste', () => pastes++);
+  field.addEventListener('input', () => {
+    inputs++;
+    // A controlled editor stores its state only after an input event.
+    saved = field === plain ? field.value : field.innerText;
+  });
+}
+function resetEditor(config) {
+  plain.hidden = config.mode !== 'textarea';
+  rich.hidden = config.mode === 'textarea';
+  editor = config.mode === 'textarea' ? plain : rich;
+  inputs = pastes = 0;
+  revision = config.revision;
+  saved = config.text;
+  if (editor === plain) {
+    editor.value = config.text;
+    editor.focus();
+    editor.setSelectionRange(7, 10);
+  } else {
+    editor.textContent = config.text;
+    editor.focus();
+    const range = document.createRange();
+    range.setStart(editor.firstChild, 7);
+    range.setEnd(editor.firstChild, 10);
+    const selection = getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+}
+function editorState() { return { revision, saved, inputs, pastes }; }
+</script></html>

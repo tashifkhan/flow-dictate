@@ -7,7 +7,7 @@ struct FlowApp: App {
     private var env: AppEnvironment { .shared }
 
     var body: some Scene {
-        MenuBarExtra {
+        MenuBarExtra(isInserted: .constant(!Settings.isDiagnosticRun)) {
             MenuBarView(env: env)
         } label: {
             // Filled while it is listening, so the menu bar agrees with the mic dot.
@@ -22,7 +22,8 @@ struct FlowApp: App {
         .windowResizability(.contentMinSize)
         // A menu bar accessory has no window at launch, which leaves a half-configured
         // Flow with no way to say what is wrong. Show the window until setup is done.
-        .defaultLaunchBehavior(AppEnvironment.shared.needsSetup ? .presented : .automatic)
+        .defaultLaunchBehavior(Settings.isDiagnosticRun ? .suppressed
+                               : AppEnvironment.shared.needsSetup ? .presented : .automatic)
         .commands { FlowCommands(env: env) }
 
         // Qualified: Flow has its own `Settings` model type.
@@ -42,6 +43,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if CommandLine.arguments.contains("--self-check") { SelfCheck.run() }
             if CommandLine.arguments.contains("--check-streaming") {
                 Task { await StreamingCheck.run() }
+                return
+            }
+            if let index = CommandLine.arguments.firstIndex(of: "--check-electron-insertion"),
+               CommandLine.arguments.indices.contains(index + 1) {
+                let directory = CommandLine.arguments[index + 1]
+                Task { await ElectronInsertionCheck.run(directory: directory) }
+                return
+            }
+            if let index = CommandLine.arguments.firstIndex(of: "--check-target-insertion"),
+               CommandLine.arguments.indices.contains(index + 2) {
+                let bundleID = CommandLine.arguments[index + 1]
+                let output = CommandLine.arguments[index + 2]
+                Task { await TargetInsertionCheck.run(bundleID: bundleID, output: output) }
                 return
             }
             if let index = CommandLine.arguments.firstIndex(of: "--check-cloud-live"),
