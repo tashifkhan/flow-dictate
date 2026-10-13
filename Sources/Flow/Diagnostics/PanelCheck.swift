@@ -41,10 +41,12 @@ enum PanelCheck {
         }
         for size in PanelSize.allCases {
             Settings.shared.panelSize = size
-            await controller.previewPanelForCheck(.preparing(nil))
+            await controller.previewPanelForCheck(.recording)
+            for level: Float in [0.1, 0.2, 0.4, 0.6, 0.85, 0.55, 0.35, 0.15, 0.05] { controller.levels.push(level) }
             presenter.show()
             let frame = presenter.diagnosticWindow?.frame
             print("\(size.rawValue) initial frame: \(String(describing: frame))")
+            await snapshot(size.rawValue + "-waveform")
             await controller.previewPanelForCheck(.processing, toField: true)
             await snapshot(size.rawValue + "-field-progress")
             for step in 1...20 {
@@ -75,6 +77,16 @@ enum PanelCheck {
             await controller.previewPanelForCheck(.inserted("The completed response"))
             await snapshot(size.rawValue + "-tick")
             report[size.rawValue + "CompletionFrameStable"] = presenter.diagnosticWindow?.frame == frame
+            presenter.hide()
+            try? await Task.sleep(for: .milliseconds(500))
+            report[size.rawValue + "SurvivesPanelDismissal"] = !presenter.isVisible
+            // Reopen and dismiss again. Previously the process exited before this ran.
+            await controller.previewPanelForCheck(.recording)
+            presenter.show()
+            await snapshot(size.rawValue + "-recording-pill")
+            presenter.hide()
+            try? await Task.sleep(for: .milliseconds(500))
+            report[size.rawValue + "SurvivesRepeatedDismissal"] = !presenter.isVisible
         }
     }
 }

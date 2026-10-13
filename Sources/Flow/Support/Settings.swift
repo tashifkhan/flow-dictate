@@ -110,7 +110,12 @@ final class Settings {
             defaults.set(data, forKey: K.microphones)
         }
     }
-    var panelSize: PanelSize { didSet { defaults.set(panelSize.rawValue, forKey: K.panelSize) } }
+    var panelSize: PanelSize {
+        didSet {
+            // UI diagnostics replay both sizes without changing the user's preference.
+            if !Self.isDiagnosticRun { defaults.set(panelSize.rawValue, forKey: K.panelSize) }
+        }
+    }
     /// Off by default. Worth turning on with press-to-toggle, where a forgotten
     /// recording is easy.
     var recordingLimit: RecordingLimit { didSet { defaults.set(recordingLimit.rawValue, forKey: K.recordingLimit) } }

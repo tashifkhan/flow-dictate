@@ -38,8 +38,13 @@ struct FlowApp: App {
 /// Menu bar apps get their URL callbacks through the app delegate; SwiftUI's
 /// `onOpenURL` only fires for scenes that happen to be on screen.
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    // Dismissing the floating dictation panel must never quit the menu bar app.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         MainActor.assumeIsolated {
+            // Flow owns a global hotkey even with every window hidden.
+            ProcessInfo.processInfo.disableAutomaticTermination("Flow waits for the dictation hotkey")
             if CommandLine.arguments.contains("--self-check") { SelfCheck.run() }
             if CommandLine.arguments.contains("--check-streaming") {
                 Task { await StreamingCheck.run() }
