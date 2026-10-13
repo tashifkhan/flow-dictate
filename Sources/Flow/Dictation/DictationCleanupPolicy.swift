@@ -23,7 +23,7 @@ enum DictationCleanupPolicy {
     static func termsBlock(_ terms: [String], descriptions: [String: String]) -> String? {
         guard !terms.isEmpty else { return nil }
         let list = terms.map { term in
-            let description = descriptions[term.lowercased()] ?? ""
+            let description = (descriptions[term.lowercased()] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             return description.isEmpty ? PromptLibrary.render("cleanup-context.term", ["term": term])
                 : PromptLibrary.render("cleanup-context.term.described", ["term": term, "description": description])
         }

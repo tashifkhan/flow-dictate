@@ -245,9 +245,9 @@ already starts with "my" is not doubled. A field reaches a model only when you s
 it, unless you tick Always tell the model. Then every local and cloud cleanup
 request carries a line such as "About the speaker: their GitHub (personal profile
 link) is github.com/you", with an instruction to use it for spelling and references
-and never to add it unprompted. Click a custom word to give it a description. A
-described word reaches the prompt as "CCADB (Mozilla's Common CA Database)" when it
-appears in a dictation. `flowclone://vocabulary` opens this page.
+and never to add it unprompted. Each custom word has its own Meaning box, and the
+add row takes a meaning for a single new word. A word with a meaning reaches the
+prompt as "CCADB (Mozilla's Common CA Database)" when it appears in a dictation. `flowclone://vocabulary` opens this page.
 
 Every prompt Flow sends lives as Markdown in [`Prompts/`](Prompts/README.md), one
 file per job, such as `cloud-cleanup.md` and `apple-intelligence-cleanup.md`.

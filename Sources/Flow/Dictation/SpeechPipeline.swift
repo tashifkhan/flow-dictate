@@ -75,15 +75,20 @@ actor SpeechPipeline {
         // A custom language model only attaches to DictationTranscriber, so opting in
         // means giving up the better transcriber. The setting says so.
         if transcriptionLanguage == .system,
-           useCustomModel, CustomLanguageModel.hasTrainedModel(),
-           let supported = await DictationTranscriber.supportedLocale(equivalentTo: requestedLocale) {
+            useCustomModel, CustomLanguageModel.hasTrainedModel(),
+            let supported = await DictationTranscriber.supportedLocale(
+                equivalentTo: requestedLocale)
+        {
             locale = supported
             kind = .customized
         } else if SpeechTranscriber.isAvailable,
-           let supported = await SpeechTranscriber.supportedLocale(equivalentTo: requestedLocale) {
+            let supported = await SpeechTranscriber.supportedLocale(equivalentTo: requestedLocale)
+        {
             locale = supported
             kind = .speech
-        } else if let supported = await DictationTranscriber.supportedLocale(equivalentTo: requestedLocale) {
+        } else if let supported = await DictationTranscriber.supportedLocale(
+            equivalentTo: requestedLocale)
+        {
             locale = supported
             kind = .dictation
         } else {
@@ -94,9 +99,11 @@ actor SpeechPipeline {
         if await AssetInventory.status(forModules: [probe]) != .installed {
             // Reserving is what lets the assets stay on disk for us.
             _ = try? await AssetInventory.reserve(locale: locale)
-            if let request = try await AssetInventory.assetInstallationRequest(supporting: [probe]) {
+            if let request = try await AssetInventory.assetInstallationRequest(supporting: [probe])
+            {
                 let observation = progress.map { report in
-                    request.progress.observe(\.fractionCompleted, options: [.initial, .new]) { p, _ in
+                    request.progress.observe(\.fractionCompleted, options: [.initial, .new]) {
+                        p, _ in
                         report(p.fractionCompleted)
                     }
                 }
@@ -107,7 +114,9 @@ actor SpeechPipeline {
         }
 
         resolvedLocale = locale
-        log.info("locale \(locale.identifier, privacy: .public), kind \(String(describing: self.kind), privacy: .public)")
+        log.info(
+            "locale \(locale.identifier, privacy: .public), kind \(String(describing: self.kind), privacy: .public)"
+        )
         return locale
     }
 
@@ -198,7 +207,9 @@ actor SpeechPipeline {
                 context.contextualStrings = [.general: vocabulary]
             }
 
-            guard let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [module]) else {
+            guard
+                let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [module])
+            else {
                 throw PipelineError.noAudioFormat
             }
 
@@ -217,7 +228,9 @@ actor SpeechPipeline {
                 self.capture = nil
                 throw error
             }
-            log.error("local transcriber unavailable, keeping audio for cloud: \(error.localizedDescription, privacy: .public)")
+            log.error(
+                "local transcriber unavailable, keeping audio for cloud: \(error.localizedDescription, privacy: .public)"
+            )
         }
     }
 
@@ -230,11 +243,15 @@ actor SpeechPipeline {
             do {
                 if let t = module as? SpeechTranscriber {
                     for try await result in t.results {
-                        await self?.absorb(String(result.text.characters), isFinal: result.isFinal, onUpdate: onUpdate)
+                        await self?.absorb(
+                            String(result.text.characters), isFinal: result.isFinal,
+                            onUpdate: onUpdate)
                     }
                 } else if let d = module as? DictationTranscriber {
                     for try await result in d.results {
-                        await self?.absorb(String(result.text.characters), isFinal: result.isFinal, onUpdate: onUpdate)
+                        await self?.absorb(
+                            String(result.text.characters), isFinal: result.isFinal,
+                            onUpdate: onUpdate)
                     }
                 }
             } catch is CancellationError {

@@ -43,6 +43,7 @@ struct SettingsView: View {
     @State private var launchAtLogin = LoginItem.isEnabled
     @State private var loginError: String?
     @State private var newWord = ""
+    @State private var newWordMeaning = ""
     @State private var newFrom = ""
     @State private var newCorrection = ""
     /// Transient feedback for a bulk add or an import: "added 34 words".
@@ -413,6 +414,11 @@ struct SettingsView: View {
                         .labelsHidden()
                         .textFieldStyle(.roundedBorder)
                         .onSubmit(addWord)
+                    TextField("Meaning", text: $newWordMeaning, prompt: Text("Meaning (optional)"))
+                        .labelsHidden()
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit(addWord)
+                        .help("What the word means. Saved only when you add a single word.")
                     Button("Add", action: addWord)
                         .disabled(newWord.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
@@ -431,14 +437,29 @@ struct SettingsView: View {
                             .labelsHidden()
                             .textFieldStyle(.roundedBorder)
                     }
-                    FlowLayout(spacing: 6) {
-                        ForEach(filteredWords, id: \.self) { word in
-                            WordChip(word: word, description: env.lexicon.description(for: word),
-                                     describe: { env.lexicon.setDescription($0, for: word) },
-                                     remove: { env.lexicon.removeWord(word) })
+                    ForEach(filteredWords, id: \.self) { word in
+                        HStack(spacing: 10) {
+                            Text(word)
+                                .lineLimit(1)
+                                .frame(width: 150, alignment: .leading)
+                                .help(word)
+                            TextField("Meaning", text: Binding(
+                                get: { env.lexicon.description(for: word) },
+                                set: { env.lexicon.setDescription($0, for: word) }
+                            ), prompt: Text("Meaning"))
+                                .labelsHidden()
+                                .foregroundStyle(.secondary)
+                                .accessibilityLabel("Meaning of \(word)")
+                            Button {
+                                env.lexicon.removeWord(word)
+                            } label: {
+                                Image(systemName: "minus.circle")
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Remove \(word)")
+                            .accessibilityLabel("Remove \(word)")
                         }
                     }
-                    .padding(.vertical, 4)
                 }
             } header: {
                 HStack {
@@ -453,7 +474,7 @@ struct SettingsView: View {
                 .buttonStyle(.borderless)
                 .font(.callout)
             } footer: {
-                Text("Given to the recogniser and to the cleanup pass. Click a word to say what it means; the cleanup prompt then reads it as \"CCADB (Mozilla's Common CA Database)\".")
+                Text("Given to the recogniser and to the cleanup pass. A meaning goes to the model with the word whenever you say it, as \"CCADB (Mozilla's Common CA Database)\". Leave it empty for names and terms that need no explanation.")
                     .font(.caption).foregroundStyle(.secondary)
             }
 
@@ -551,7 +572,17 @@ struct SettingsView: View {
     private func addWord() {
         // The field doubles as a paste target, so always go through the bulk path.
         let added = env.lexicon.addWords(newWord)
-        note(added == 0 ? "Already in the dictionary." : "Added \(added) word\(added == 1 ? "" : "s").")
+        // A meaning belongs to one word. A pasted list has no single word to attach it to.
+        let word = newWord.trimmingCharacters(in: .whitespacesAndNewlines)
+        let single = !word.isEmpty && !word.contains(where: { "\n\r,;\t".contains($0) })
+        let meaning = newWordMeaning.trimmingCharacters(in: .whitespacesAndNewlines)
+        if single, !meaning.isEmpty, env.lexicon.contains(word) {
+            env.lexicon.setDescription(meaning, for: word)
+            note(added == 0 ? "Saved the meaning of \(word)." : "Added \(word) with its meaning.")
+            newWordMeaning = ""
+        } else {
+            note(added == 0 ? "Already in the dictionary." : "Added \(added) word\(added == 1 ? "" : "s").")
+        }
         newWord = ""
     }
 
@@ -683,60 +714,4 @@ struct SettingsView: View {
 }
 
 /// A removable word in the vocabulary list.
-private struct WordChip: View {
-    var word: String
-    var description: String
-    var describe: (String) -> Void
-    var remove: () -> Void
-    @State private var hovering = false
-    @State private var editing = false
-    @State private var draft = ""
 
-    var body: some View {
-        HStack(spacing: 4) {
-            Button {
-                draft = description
-                editing = true
-            } label: {
-                HStack(spacing: 4) {
-                    Text(word).font(.callout)
-                    if !description.isEmpty {
-                        Image(systemName: "text.bubble")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
-            .buttonStyle(.plain)
-            .help(description.isEmpty ? "Add what \(word) means" : description)
-            .accessibilityLabel(description.isEmpty ? word : "\(word), \(description)")
-            .accessibilityHint("Edit the description")
-            .popover(isPresented: $editing, arrowEdge: .bottom) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(word).font(.headline)
-                    TextField("Description", text: $draft, prompt: Text("What it means, like Mozilla's Common CA Database"))
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 300)
-                        .onSubmit { editing = false }
-                    Text("Sent with the word whenever it appears in a dictation.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .padding(14)
-                .onDisappear { describe(draft) }
-            }
-            Button(action: remove) {
-                Image(systemName: "xmark.circle.fill")
-            }
-            .buttonStyle(.borderless)
-            .foregroundStyle(hovering ? .secondary : .tertiary)
-            .help("Remove \(word)")
-            .accessibilityLabel("Remove \(word)")
-        }
-        .padding(.leading, 9)
-        .padding(.trailing, 5)
-        .padding(.vertical, 3)
-        .background(hovering ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.quaternary.opacity(0.6)), in: Capsule())
-        .onHover { hovering = $0 }
-    }
-}

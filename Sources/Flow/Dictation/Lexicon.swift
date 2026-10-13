@@ -148,11 +148,13 @@ final class Lexicon {
 
     func description(for word: String) -> String { wordDescriptions[word.lowercased()] ?? "" }
 
+    /// Saved as typed, so a live text field keeps the space you just typed. The prompt
+    /// trims it.
     func setDescription(_ description: String, for word: String) {
-        let trimmed = description.trimmingCharacters(in: .whitespacesAndNewlines)
         let key = word.lowercased()
-        guard wordDescriptions[key] ?? "" != trimmed else { return }
-        wordDescriptions[key] = trimmed.isEmpty ? nil : trimmed
+        let stored = description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : description
+        guard wordDescriptions[key] != stored else { return }
+        wordDescriptions[key] = stored
         defaults.set(wordDescriptions, forKey: Self.wordDescriptionsKey)
     }
 
