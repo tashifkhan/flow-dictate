@@ -775,16 +775,16 @@ enum SelfCheck {
         expect(custom.apply("Check my empty") == "Check my empty", "a field without a value stays as spoken")
         expect(custom.apply("My GitHub is down") == "My GitHub is down", "statements about a custom field stay as spoken")
         expect(lexicon.promptDetails.map(\.name) == ["GitHub"], "only fields marked Always tell the model reach every prompt")
-        let aboutSpeaker = DictationCleanupPolicy.speakerLine(lexicon.promptDetails) ?? ""
-        expect(aboutSpeaker.contains("their GitHub (personal profile link) is github.com/tashifkhan") && !aboutSpeaker.contains("work"),
+        let aboutSpeaker = DictationCleanupPolicy.speakerBlock(lexicon.promptDetails) ?? ""
+        expect(aboutSpeaker.contains("- GitHub, personal profile link: github.com/tashifkhan") && !aboutSpeaker.contains("work"),
                "the prompt names the chosen fields with their descriptions and leaves the rest out")
-        expect(DictationCleanupPolicy.speakerLine([]) == nil, "no fields add nothing to the prompt")
+        expect(DictationCleanupPolicy.speakerBlock([]) == nil, "no fields add nothing to the prompt")
         lexicon.addWord("CCADB")
         lexicon.setDescription(" Mozilla's Common CA Database ", for: "ccadb")
         expect(lexicon.description(for: "CCADB") == "Mozilla's Common CA Database", "a word keeps its trimmed description")
         expect(Lexicon(defaults: lexiconDefaults).description(for: "ccadb") == "Mozilla's Common CA Database", "word descriptions survive a reload")
-        expect(DictationCleanupPolicy.termsLine(["CCADB", "Wrangler"], descriptions: lexicon.wordDescriptions)
-               == "Spell these names and terms exactly: CCADB (Mozilla's Common CA Database), Wrangler.",
+        expect(DictationCleanupPolicy.termsBlock(["CCADB", "Wrangler"], descriptions: lexicon.wordDescriptions)
+               == "## Names and terms\nSpell these exactly: CCADB (Mozilla's Common CA Database), Wrangler. If the transcript has a near miss of one, use this spelling.",
                "described words carry their description into the prompt")
         lexicon.removeWord("CCADB")
         expect(lexicon.description(for: "CCADB").isEmpty, "removing a word removes its description")
@@ -802,9 +802,11 @@ enum SelfCheck {
         // MARK: Prompts
 
         section("prompt templates")
-        let template = try? PromptTemplate(id: "check", source: "Hello {name}, {{literal}}.\n{optional}\nEnd {name}")
-        expect((try? template?.render(["name": "Tashif", "optional": ""])) == "Hello Tashif, {literal}.\nEnd Tashif",
-               "placeholders fill, double braces stay literal, and an empty placeholder line disappears")
+        let template = try? PromptTemplate(id: "check", source: "Hello {name}, {{literal}}.\n\n{optional}\n\nEnd {name}")
+        expect((try? template?.render(["name": "Tashif", "optional": ""])) == "Hello Tashif, {literal}.\n\nEnd Tashif",
+               "placeholders fill, double braces stay literal, and an empty block leaves no gap")
+        expect((try? template?.render(["name": "Tashif", "optional": "Middle"])) == "Hello Tashif, {literal}.\n\nMiddle\n\nEnd Tashif",
+               "a filled block keeps its blank lines")
         expect((try? template?.render(["name": "x"])) == nil, "a missing value is an error")
         expect((try? template?.render(["name": "x", "optional": "", "typo": ""])) == nil, "an unused value is an error")
         expect((try? PromptTemplate(id: "check", source: "a } b")) == nil, "a lone closing brace is an error")
@@ -826,17 +828,30 @@ enum SelfCheck {
         promptContext.corrections = [(said: "ta shif", meant: "Tashif")]
         promptContext.speakerDetails = [SpeakerDetail(name: "GitHub", value: "github.com/tashifkhan")]
         let cloudPrompt = CloudService.refinementInstruction(promptContext)
-        expect(cloudPrompt.hasPrefix(DictationCleanupPolicy.instruction + "\nThe text goes into Slack, a chat or messaging app. Keep casual wording"),
-               "the cloud prompt starts with the shared rules and the destination")
-        expect(cloudPrompt.contains("CCADB (Mozilla's Common CA Database)") && cloudPrompt.contains("\"ta shif\" as \"Tashif\"")
-               && cloudPrompt.contains("their GitHub is github.com/tashifkhan"), "the cloud prompt carries terms, replacements, and details")
+        expect(cloudPrompt.hasPrefix("## Role\nYou edit dictation for Flow")
+               && cloudPrompt.contains("Flow inserts your answer directly into Slack, a chat or messaging app.")
+               && cloudPrompt.contains("## Task\n" + DictationCleanupPolicy.instruction)
+               && cloudPrompt.contains("## Writing for Slack\nKeep casual wording"),
+               "the cloud prompt has its role, the shared rules, and the destination")
+        expect(cloudPrompt.contains("CCADB (Mozilla's Common CA Database)") && cloudPrompt.contains("- \"ta shif\" becomes \"Tashif\"")
+               && cloudPrompt.contains("- GitHub: github.com/tashifkhan") && cloudPrompt.hasSuffix("quotation marks or a code fence."),
+               "the cloud prompt carries terms, replacements, and details, and ends with the output rules")
+        let audioPrompt = CloudService.refinementInstruction(promptContext, audio: true)
+        expect(audioPrompt.contains("The attached audio is the speaker dictating") && !audioPrompt.contains("The user message is a transcript"),
+               "the one-pass prompt describes audio input instead of a transcript")
         let localPrompt = CleanupService.instructions(for: promptContext)
-        expect(localPrompt.contains("in a AXTextArea field.\nWrite it like a casual message.") && !localPrompt.contains("Devanagari")
-               && !localPrompt.contains("\n\n") && !localPrompt.contains("{"),
+        expect(localPrompt.contains("in a AXTextArea field.") && localPrompt.contains("## Writing for Slack\nWrite it like a casual message.")
+               && !localPrompt.contains("Devanagari") && !localPrompt.contains("\n\n\n") && !localPrompt.contains("{"),
                "the local prompt fills every slot and leaves no gaps for missing pieces")
+        let bare = CleanupContext(appName: "Notes", bundleID: "com.apple.Notes", axRole: "AXTextArea",
+                                  appDescription: WritingContext.document.description, writingContext: .document,
+                                  transcriptionLanguage: .system)
+        expect([CleanupService.instructions(for: bare), CloudService.refinementInstruction(bare)].allSatisfy {
+            !$0.contains("\n\n\n") && !$0.contains("## Names and terms") && !$0.contains("## About the speaker")
+        }, "a dictation with no optional blocks leaves no empty sections or gaps")
         promptContext.transcriptionLanguage = .hinglish
         expect(CleanupService.instructions(for: promptContext).contains("never Devanagari")
-               && CloudService.refinementInstruction(promptContext).contains("Roman-script Hinglish"), "Hinglish adds its rules to both prompts")
+               && CloudService.refinementInstruction(promptContext).contains("never Devanagari"), "Hinglish adds its rules to both prompts")
         expect(DictationCleanupPolicy.instruction.contains("Writing: We need three changes:\n1. Fix login.\n2. Add tests."),
                "multi-line examples keep their line breaks")
 

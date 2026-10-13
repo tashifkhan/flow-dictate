@@ -244,7 +244,7 @@ actor CloudService {
         switch account.api {
         case .openAI:
             if route.model.audioInput == .multimodal {
-                let instruction = PromptLibrary.render(language == .hinglish ? "cloud.transcribe.hinglish" : "cloud.transcribe")
+                let instruction = PromptLibrary.render(language == .hinglish ? "cloud-transcription.hinglish" : "cloud-transcription.plain")
                 let payload = Self.audioChatPayload(audio: audio, modelID: route.model.modelID, instruction: instruction)
                 return try chatText(try await sendJSON(account, route.model, path: "chat/completions", payload: payload, scope: scope))
             }
@@ -263,7 +263,7 @@ actor CloudService {
             return try nonempty(json["text"] as? String)
         case .google:
             guard ((audio.count + 2) / 3) * 4 < 19_000_000 else { throw CloudError.audioTooLarge }
-            let prompt = PromptLibrary.render(language == .hinglish ? "cloud.transcribe.hinglish" : "cloud.transcribe")
+            let prompt = PromptLibrary.render(language == .hinglish ? "cloud-transcription.hinglish" : "cloud-transcription.plain")
             let payload: [String: Any] = ["contents": [["parts": [
                 ["text": prompt],
                 ["inlineData": ["mimeType": "audio/wav", "data": audio.base64EncodedString()]],
@@ -277,7 +277,7 @@ actor CloudService {
 
     private func onePass(_ audio: Data, route: CloudRoute, context: CleanupContext, scope: Scope, preview: @escaping Preview) async throws -> String {
         let account = route.provider
-        let instruction = PromptLibrary.render("cloud.one_pass", ["refine": Self.refinementInstruction(context)])
+        let instruction = Self.refinementInstruction(context, audio: true)
         switch account.api {
         case .openAI:
             let payload = Self.audioChatPayload(audio: audio, modelID: route.model.modelID, instruction: instruction)
@@ -327,18 +327,19 @@ actor CloudService {
         "models/\(route.model.modelID):generateContent"
     }
 
-    /// The text lives in `Prompts/cloud.txt` and `Prompts/policy.txt`.
-    static func refinementInstruction(_ context: CleanupContext) -> String {
-        var lines = [PromptLibrary.render("cloud.style." + context.writingContext.promptStyle)]
-        if context.transcriptionLanguage == .hinglish { lines.append(PromptLibrary.render("cloud.hinglish")) }
-        lines += [DictationCleanupPolicy.termsLine(context.vocabulary, descriptions: context.termDescriptions),
-                  DictationCleanupPolicy.replacementsLine(context.corrections),
-                  DictationCleanupPolicy.speakerLine(context.speakerDetails)].compactMap { $0 }
-        return PromptLibrary.render("cloud.refine", [
-            "rules": DictationCleanupPolicy.instruction,
+    /// The text lives in `Prompts/cloud-cleanup.md`. With `audio`, the model gets the
+    /// recording and transcribes and cleans it in one response.
+    static func refinementInstruction(_ context: CleanupContext, audio: Bool = false) -> String {
+        let body = PromptLibrary.render("cloud-cleanup.body", [
+            "app_name": context.appName,
+            "cleanup_rules": DictationCleanupPolicy.instruction,
+            "style": PromptLibrary.render("cloud-cleanup.style." + context.writingContext.promptStyle),
+            "context": DictationCleanupPolicy.contextBlocks(for: context, includeLastInsert: false),
+        ])
+        return PromptLibrary.render(audio ? "cloud-cleanup.audio" : "cloud-cleanup.transcript", [
             "app_name": context.appName,
             "app_description": context.appDescription,
-            "context": lines.joined(separator: " "),
+            "body": body,
         ])
     }
 

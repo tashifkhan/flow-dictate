@@ -3,8 +3,8 @@ import OSLog
 
 /// One named prompt from `Prompts/*.txt`, with `{placeholder}` slots in the style of a
 /// Python format string. `{{` and `}}` are literal braces. A line that holds only a
-/// placeholder disappears when that placeholder renders empty, so optional pieces
-/// leave no blank lines behind.
+/// placeholder disappears when that placeholder renders empty, together with one
+/// blank line next to it, so an optional block leaves no gap behind.
 struct PromptTemplate: Sendable, Equatable {
     enum Piece: Sendable, Equatable {
         case text(String)
@@ -35,6 +35,7 @@ struct PromptTemplate: Sendable, Equatable {
             throw PromptError.unusedValue(id, extra)
         }
         var rendered: [String] = []
+        var dropNextBlank = false
         for line in lines {
             let text = line.map { piece in
                 switch piece {
@@ -42,7 +43,15 @@ struct PromptTemplate: Sendable, Equatable {
                 case .slot(let name): values[name] ?? ""
                 }
             }.joined()
-            if line.count == 1, case .slot = line[0], text.isEmpty { continue }
+            if line.count == 1, case .slot = line[0], text.isEmpty {
+                dropNextBlank = rendered.last?.trimmingCharacters(in: .whitespaces).isEmpty ?? true
+                continue
+            }
+            if dropNextBlank, text.trimmingCharacters(in: .whitespaces).isEmpty {
+                dropNextBlank = false
+                continue
+            }
+            dropNextBlank = false
             rendered.append(text)
         }
         return rendered.joined(separator: "\n")
@@ -100,9 +109,9 @@ enum PromptError: Error, LocalizedError, Equatable {
     }
 }
 
-/// Every prompt Flow sends, loaded once from the `Prompts` folder. A file holds named
-/// sections: a `[name]` line starts one, and `;` starts a comment line. A prompt's id
-/// is its file name and section, such as `cloud.refine`.
+/// Every prompt Flow sends, loaded once from the `Prompts` folder. Each Markdown file
+/// holds named sections: a `[name]` line starts one, and `;` starts a comment line. A
+/// prompt's id is its file name and section, such as `cloud-cleanup.transcript`.
 enum PromptLibrary {
     private static let log = Logger(subsystem: "sh.taf.flow", category: "prompts")
 
@@ -125,7 +134,7 @@ enum PromptLibrary {
 
     static func load(from directory: URL) throws -> [String: PromptTemplate] {
         let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
-            .filter { $0.pathExtension == "txt" }
+            .filter { $0.pathExtension == "md" && $0.lastPathComponent != "README.md" }
         var templates: [String: PromptTemplate] = [:]
         for file in files {
             let prefix = file.deletingPathExtension().lastPathComponent
@@ -168,19 +177,39 @@ enum PromptLibrary {
     /// orphaned section.
     static let instructionIDs: Set<String> = {
         var ids: Set<String> = [
-            "policy.rules", "policy.terms", "policy.term", "policy.term.described", "policy.replacements",
-            "policy.replacement", "policy.speaker", "policy.speaker.detail", "policy.speaker.detail.described",
-            "cloud.transcribe", "cloud.transcribe.hinglish", "cloud.one_pass", "cloud.refine", "cloud.hinglish",
-            "local.instructions", "local.hinglish", "local.examples", "local.last_insert", "local.terms.near_miss",
-            "local.commands", "local.schema.mode", "local.schema.text", "local.schema.target",
-            "local.summary", "local.summary.title", "local.summary.summary",
+            "cleanup-rules.rules",
+            "cleanup-context.hinglish", "cleanup-context.terms", "cleanup-context.term", "cleanup-context.term.described",
+            "cleanup-context.replacements", "cleanup-context.replacement", "cleanup-context.speaker",
+            "cleanup-context.speaker.detail", "cleanup-context.speaker.detail.described", "cleanup-context.last_insert",
+            "cloud-cleanup.transcript", "cloud-cleanup.audio", "cloud-cleanup.body",
+            "cloud-transcription.plain", "cloud-transcription.hinglish",
+            "apple-intelligence-cleanup.prompt", "apple-intelligence-cleanup.schema.mode",
+            "apple-intelligence-cleanup.schema.text", "apple-intelligence-cleanup.schema.target",
+            "note-summary.prompt", "note-summary.schema.title", "note-summary.schema.summary",
         ]
         for style in ["chat", "email", "development", "document", "general"] {
-            ids.insert("cloud.style." + style)
-            ids.insert("local.style." + style)
+            ids.insert("cloud-cleanup.style." + style)
+            ids.insert("apple-intelligence-cleanup.style." + style)
         }
         return ids
     }()
+
+    /// `Flow --print-prompts`: what the models see for a sample chat dictation that
+    /// uses every optional block except Hinglish.
+    @MainActor
+    static func sample() -> String {
+        var context = CleanupContext(appName: "Slack", bundleID: "com.tinyspeck.slackmacgap", axRole: "AXTextArea",
+                                     appDescription: WritingContext.chat.description, writingContext: .chat,
+                                     transcriptionLanguage: .system)
+        context.vocabulary = ["CCADB", "Wrangler"]
+        context.termDescriptions = ["ccadb": "Mozilla's Common CA Database"]
+        context.corrections = [(said: "ta shif", meant: "Tashif")]
+        context.speakerDetails = [SpeakerDetail(name: "GitHub", description: "personal profile link", value: "github.com/you")]
+        return ["# Cloud, transcript\n\n" + CloudService.refinementInstruction(context),
+                "# Cloud, audio\n\n" + CloudService.refinementInstruction(context, audio: true),
+                "# Apple Intelligence\n\n" + CleanupService.instructions(for: context)]
+            .joined(separator: "\n\n" + String(repeating: "=", count: 72) + "\n\n")
+    }
 
     /// A bad prompt id or placeholder is a bug. Debug builds stop; release builds log
     /// it and leave that piece out.

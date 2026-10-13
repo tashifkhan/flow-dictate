@@ -90,7 +90,7 @@ final class Settings {
     static let shared = Settings()
     static let isDiagnosticRun = ["--self-check", "--check-streaming", "--check-cloud-http", "--probe-focus",
                                   "--check-insertion", "--check-cloud-live", "--check-electron-insertion",
-                                  "--check-target-insertion", "--check-panel"].contains(where: CommandLine.arguments.contains)
+                                  "--check-target-insertion", "--check-panel", "--print-prompts"].contains(where: CommandLine.arguments.contains)
 
     private let defaults = UserDefaults.standard
 

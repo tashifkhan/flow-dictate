@@ -19,7 +19,8 @@ enum WritingContext: String, Sendable {
         }
     }
 
-    /// The `style.*` section in `Prompts/cloud.txt` and `Prompts/local.txt`.
+    /// The `style.*` section in `Prompts/cloud-cleanup.md` and
+    /// `Prompts/apple-intelligence-cleanup.md`.
     var promptStyle: String {
         switch self {
         case .chat: "chat"

@@ -106,16 +106,16 @@ actor CleanupService {
     private lazy var decisionSchema: GenerationSchema? = {
         let mode = DynamicGenerationSchema(
             name: "mode",
-            description: PromptLibrary.render("local.schema.mode"),
+            description: PromptLibrary.render("apple-intelligence-cleanup.schema.mode"),
             anyOf: DictationMode.allCases.map(\.rawValue)
         )
         let root = DynamicGenerationSchema(name: "Decision", properties: [
             .init(name: "mode", schema: mode),
             .init(name: "text",
-                  description: PromptLibrary.render("local.schema.text"),
+                  description: PromptLibrary.render("apple-intelligence-cleanup.schema.text"),
                   schema: DynamicGenerationSchema(type: String.self)),
             .init(name: "target",
-                  description: PromptLibrary.render("local.schema.target"),
+                  description: PromptLibrary.render("apple-intelligence-cleanup.schema.target"),
                   schema: DynamicGenerationSchema(type: String.self),
                   isOptional: true),
         ])
@@ -124,9 +124,9 @@ actor CleanupService {
 
     private lazy var summarySchema: GenerationSchema? = {
         let root = DynamicGenerationSchema(name: "NoteSummary", properties: [
-            .init(name: "title", description: PromptLibrary.render("local.summary.title"),
+            .init(name: "title", description: PromptLibrary.render("note-summary.schema.title"),
                   schema: DynamicGenerationSchema(type: String.self)),
-            .init(name: "summary", description: PromptLibrary.render("local.summary.summary"),
+            .init(name: "summary", description: PromptLibrary.render("note-summary.schema.summary"),
                   schema: DynamicGenerationSchema(type: String.self)),
         ])
         return try? GenerationSchema(root: root, dependencies: [])
@@ -214,27 +214,15 @@ actor CleanupService {
 
     /// The model sees the whole thought after recording ends. That lets it clean false
     /// starts and repairs that a streaming word-by-word pass cannot understand.
-    /// The text lives in `Prompts/local.txt`.
+    /// The text lives in `Prompts/apple-intelligence-cleanup.md`.
     static func instructions(for context: CleanupContext) -> String {
-        var lines: [String] = []
-        if let last = context.lastInsert, !last.isEmpty, context.spokenCommand {
-            lines.append(PromptLibrary.render("local.last_insert", ["text": String(last.suffix(3000))]))
-        }
-        if let terms = DictationCleanupPolicy.termsLine(context.vocabulary, descriptions: context.termDescriptions) {
-            lines += [terms, PromptLibrary.render("local.terms.near_miss")]
-        }
-        lines += [DictationCleanupPolicy.replacementsLine(context.corrections),
-                  DictationCleanupPolicy.speakerLine(context.speakerDetails)].compactMap { $0 }
-        return PromptLibrary.render("local.instructions", [
-            "rules": DictationCleanupPolicy.instruction,
-            "hinglish": context.transcriptionLanguage == .hinglish ? PromptLibrary.render("local.hinglish") : "",
-            "examples": PromptLibrary.render("local.examples"),
+        PromptLibrary.render("apple-intelligence-cleanup.prompt", [
             "app_name": context.appName,
             "app_description": context.appDescription,
             "field_role": context.axRole,
-            "style": PromptLibrary.render("local.style." + context.writingContext.promptStyle),
-            "context": lines.joined(separator: "\n"),
-            "commands": PromptLibrary.render("local.commands"),
+            "cleanup_rules": DictationCleanupPolicy.instruction,
+            "style": PromptLibrary.render("apple-intelligence-cleanup.style." + context.writingContext.promptStyle),
+            "context": DictationCleanupPolicy.contextBlocks(for: context, includeLastInsert: true),
         ])
     }
 
@@ -464,7 +452,7 @@ actor CleanupService {
         guard case .available = model.availability, let schema = summarySchema else {
             throw CleanupError.unavailable
         }
-        let session = LanguageModelSession(model: model, instructions: PromptLibrary.render("local.summary"))
+        let session = LanguageModelSession(model: model, instructions: PromptLibrary.render("note-summary.prompt"))
         let response = try await session.respond(
             to: String(text.prefix(4000)),
             schema: schema,

@@ -46,6 +46,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // Flow owns a global hotkey even with every window hidden.
             ProcessInfo.processInfo.disableAutomaticTermination("Flow waits for the dictation hotkey")
             if CommandLine.arguments.contains("--self-check") { SelfCheck.run() }
+            if CommandLine.arguments.contains("--print-prompts") {
+                print(PromptLibrary.sample())
+                exit(0)
+            }
             if CommandLine.arguments.contains("--check-streaming") {
                 Task { await StreamingCheck.run() }
                 return

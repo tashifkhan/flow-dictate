@@ -249,10 +249,12 @@ and never to add it unprompted. Click a custom word to give it a description. A
 described word reaches the prompt as "CCADB (Mozilla's Common CA Database)" when it
 appears in a dictation. `flowclone://vocabulary` opens this page.
 
-Every prompt Flow sends lives as plain text in [`Prompts/`](Prompts/README.md), with
-`{placeholder}` slots filled at run time like a Python format string. Edit a file
-and rebuild to change what the models see. The self-check fails if a prompt is
-missing, unused, or has a slot the code does not fill.
+Every prompt Flow sends lives as Markdown in [`Prompts/`](Prompts/README.md), one
+file per job, such as `cloud-cleanup.md` and `apple-intelligence-cleanup.md`.
+`{placeholder}` slots are filled at run time like a Python format string. Edit a
+file and rebuild to change what the models see, and run `Flow --print-prompts` to
+read the result. The self-check fails if a prompt is missing, unused, or has a slot
+the code does not fill.
 
 If no editable text field has focus, Flow leaves the finished text on the clipboard
 and says "Copied to clipboard" in the panel. It does not send a paste shortcut to the
