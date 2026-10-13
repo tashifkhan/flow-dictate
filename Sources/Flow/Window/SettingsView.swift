@@ -359,7 +359,20 @@ struct SettingsView: View {
     }
 
     private var vocabulary: some View {
-        Form {
+        @Bindable var lexicon = env.lexicon
+        return Form {
+            Section {
+                TextField("Full name", text: $lexicon.personalDetails.name)
+                TextField("Email", text: $lexicon.personalDetails.email)
+                TextField("Phone number", text: $lexicon.personalDetails.phone)
+                TextField("Company", text: $lexicon.personalDetails.company)
+                TextField("Address", text: $lexicon.personalDetails.address)
+            } header: {
+                Text("Personal details")
+            } footer: {
+                Text("Say \"add my email here\" to insert your saved email, or use \"my email\" inside a sentence. Empty details stay as spoken. Details are saved on this Mac. Expanded details in a sentence reach your configured cloud model when cloud cleanup runs.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Section {
                 HStack {
                     TextField("Add a word, or paste a list", text: $newWord, prompt: Text("Add a word, or paste a list"))
@@ -445,7 +458,7 @@ struct SettingsView: View {
             } header: {
                 Text("Replacements · \(env.lexicon.corrections.count)")
             } footer: {
-                Text("You can also say \"replace X with Y\" while dictating.")
+                Text("Applied to matching words and phrases, including when cleanup is off. Add a misheard name under Heard as and its correct spelling under Write instead. You can also say \"replace X with Y\" while dictating.")
                     .font(.caption).foregroundStyle(.secondary)
             }
 

@@ -324,7 +324,7 @@ final class DictationController {
 
         // App-specific terms help the speech recognizer itself, before cleanup gets a
         // chance to repair words such as TypeScript, GraphQL, or Kubernetes.
-        let vocabulary = Array(Set(lexicon.words + targetApp.recognitionHints)).sorted()
+        let vocabulary = Array(Set(lexicon.recognitionWords + targetApp.recognitionHints)).sorted()
         // Resolved above, on the main actor; the pipeline runs off it.
         let inputDeviceUID = input.uid
         // With cloud audio routes ready, a broken local transcriber is not fatal.
@@ -405,16 +405,18 @@ final class DictationController {
             let versions = DictationVersionCapture(library: library)
             let refineEnabled = Settings.shared.cleanupEnabled
             let localContext = self.cleanupContext(raw: localRaw, app: app, lexicon: lexicon)
+            let directValue = localContext.substitutions.directInsertion(localRaw)
             let localTask = Task { @MainActor in
                 let availability = await cleanup.availability
-                var localDecision = refineEnabled ? await cleanup.clean(localRaw, context: localContext) : .raw(localRaw)
+                var localDecision = refineEnabled ? await cleanup.clean(localRaw, context: localContext) : .raw(localContext.substitutions.apply(localRaw))
                 localDecision.text = DictationCleanupPolicy.withoutEmDashes(localDecision.text)
-                if localDecision.mode == .insert {
+                if localDecision.mode == .insert, directValue == nil {
                     localDecision.text = SpokenListFormatter.format(localDecision.text).text
                 }
                 if !Task.isCancelled, !localDecision.text.isEmpty {
-                    let label = refineEnabled && availability.isAvailable
-                        ? "Local transcription · Apple Intelligence" : "Local transcription · unrefined"
+                    let label = directValue != nil ? "Saved dictionary value"
+                        : refineEnabled && availability.isAvailable
+                            ? "Local transcription · Apple Intelligence" : "Local transcription · unrefined"
                     let local = CloudResult(label: label, text: localDecision.text, source: .local)
                     versions.append(DictationVersion(id: local.id, source: .local, label: label, text: local.text))
                     self.addLateResult(local, token: token)
@@ -432,7 +434,7 @@ final class DictationController {
                 language: Settings.shared.transcriptionLanguage, parallel: cloudSettings.parallelResults)
             // The cloud ladder, top to bottom. This Mac is the rung after the last.
             let outcome = await cloud.run(
-                cloudSettings.readyRungs, job: job,
+                directValue == nil ? cloudSettings.readyRungs : [], job: job,
                 makeContext: { raw in await MainActor.run { self.cleanupContext(raw: raw, app: app, lexicon: lexicon) } },
                 progress: { detail in
                     Task { @MainActor in if self.phase == .processing { self.processingDetail = detail } }
@@ -469,17 +471,17 @@ final class DictationController {
             let anchor = Self.continuationAnchor(destination, app: app)
             let openList = self.continuations.continuation(for: anchor, now: Self.uptime)
             let formatted = SpokenListFormatter.format(raw, context: openList?.list)
-            let spokenList = formatted.containsList || formatted.isControlOnly
-                || formatted.endedList || formatted.context != nil
+            let spokenList = directValue == nil && (formatted.containsList || formatted.isControlOnly
+                || formatted.endedList || formatted.context != nil)
 
             var composed: ComposedDictation?
             var decision: Decision
             if spokenList {
-                var listText = formatted.text
+                var listText = lexicon.substitutions.apply(formatted.text)
                 if !listText.isEmpty, refineEnabled {
                     if let text = outcome?.text { listText = text }
                     else if raw == localRaw { listText = await localTask.value.text }
-                    else { listText = await self.cleanedDecision(raw: listText, app: app, cleanup: cleanup, lexicon: lexicon).text }
+                    else { listText = await self.cleanedDecision(raw: listText, app: app, cleanup: cleanup, lexicon: lexicon, alreadyResolved: true).text }
                     listText = DictationCleanupPolicy.alignNumbering(listText, with: formatted)
                 }
                 let result = DictationComposer.compose(formatted.replacingText(listText), previous: openList)
@@ -587,12 +589,13 @@ final class DictationController {
     }
 
     private func cleanedDecision(
-        raw: String, app: FrontApp, cleanup: CleanupService, lexicon: Lexicon
+        raw: String, app: FrontApp, cleanup: CleanupService, lexicon: Lexicon, alreadyResolved: Bool = false
     ) async -> Decision {
         guard await MainActor.run(body: { Settings.shared.cleanupEnabled }) else {
-            return .raw(raw)
+            return .raw(alreadyResolved ? raw : lexicon.substitutions.apply(raw))
         }
-        let context = cleanupContext(raw: raw, app: app, lexicon: lexicon)
+        var context = cleanupContext(raw: raw, app: app, lexicon: lexicon)
+        if alreadyResolved { context.substitutions.rules = [] }
         return await cleanup.clean(raw, context: context)
     }
 
@@ -605,7 +608,8 @@ final class DictationController {
                 writingContext: app.writingContext,
                 transcriptionLanguage: Settings.shared.transcriptionLanguage,
                 vocabulary: Array(Set(lexicon.matches(in: raw) + app.recognitionHints)).sorted(),
-                corrections: lexicon.recent.map { (said: $0.from, meant: $0.to) },
+                corrections: lexicon.substitutions.relevantRules(in: raw).map { (said: $0.from, meant: $0.to) },
+                substitutions: lexicon.substitutions,
                 lastInsert: self.inserter.lastInsert
         )
     }

@@ -31,6 +31,7 @@ struct CleanupContext: Sendable {
     var transcriptionLanguage: TranscriptionLanguage
     var vocabulary: [String] = []
     var corrections: [(said: String, meant: String)] = []
+    var substitutions = DictationSubstitutions()
     /// The last thing Flow typed, so "scratch that" has a referent.
     var lastInsert: String?
     /// Whether the transcript contains a command phrase. Set by `CleanupService.clean`.
@@ -146,7 +147,10 @@ actor CleanupService {
 
     /// Cleans a raw transcript, or classifies it as a command. Never throws.
     func clean(_ raw: String, context: CleanupContext) async -> Decision {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let spokenCommand = Self.soundsLikeCommand(raw)
+        if !spokenCommand, let value = context.substitutions.directInsertion(raw) { return .raw(value) }
+        let trimmed = (spokenCommand ? raw : context.substitutions.apply(raw))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return .raw("") }
 
         let fallback = context.transcriptionLanguage == .hinglish
@@ -158,7 +162,7 @@ actor CleanupService {
         }
 
         var context = context
-        context.spokenCommand = Self.soundsLikeCommand(trimmed)
+        context.spokenCommand = spokenCommand
         let session = LanguageModelSession(model: model) {
             instructions(for: context)
         }
@@ -171,8 +175,12 @@ actor CleanupService {
             )
             var decision = try parse(
                 response.content, fallback: fallback, spoken: trimmed,
-                checkSource: context.transcriptionLanguage != .hinglish
+                checkSource: context.transcriptionLanguage != .hinglish, allowCommands: spokenCommand
             )
+            decision.text = context.substitutions.normalizeVocabulary(in: decision.text)
+            if !spokenCommand, !context.substitutions.preservesValues(in: decision.text, source: raw) {
+                return .raw(fallback)
+            }
             if context.transcriptionLanguage == .hinglish {
                 decision.text = Self.romanizeHinglish(decision.text)
             }
@@ -415,7 +423,7 @@ actor CleanupService {
     }
 
     private func parse(
-        _ content: GeneratedContent, fallback: String, spoken: String, checkSource: Bool
+        _ content: GeneratedContent, fallback: String, spoken: String, checkSource: Bool, allowCommands: Bool
     ) throws -> Decision {
         let rawMode = (try? content.value(String.self, forProperty: "mode")) ?? "insert"
         let text = (try? content.value(String.self, forProperty: "text")) ?? fallback
@@ -433,7 +441,7 @@ actor CleanupService {
         // text it "replaces" is whatever the field already contained.
         //
         // The text of a mistaken delete is not a cleanup of this speech, so insert raw.
-        if mode == .delete || mode == .replace, !Self.soundsLikeCommand(spoken) {
+        if mode == .delete || mode == .replace, !allowCommands {
             log.notice("model proposed \(rawMode, privacy: .public) with no command phrase; inserting raw")
             return .raw(fallback)
         }
