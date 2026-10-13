@@ -208,6 +208,10 @@ with cleanup, replacement rules, and list numbering.
 If the field cannot support tracked updates, the pill expands to show the live
 response and Flow uses its existing paste path once generation finishes. With no
 editable field, it copies the finished response and collapses to the clipboard icon.
+The progress circle stays in place throughout generation. Fallback text appears
+in a fixed preview above it, with no per-token scrolling or window resizing.
+Successful insertion ends with only a tick; clipboard delivery ends with a copy
+button that can copy the result again. Both use the circle regardless of panel size.
 Streaming is automatic per provider, endpoint, and model. If a server rejects
 streaming or returns ordinary JSON, Flow remembers that during the session and
 uses complete responses for that route. Settings > Cloud > provider > Streaming

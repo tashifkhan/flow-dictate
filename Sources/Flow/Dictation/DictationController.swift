@@ -54,6 +54,7 @@ final class DictationController {
 
     private(set) var phase: DictationPhase = .idle {
         didSet {
+            if phase != .processing { fallbackPreviewLatched = false }
             if phase == .recording {
                 if recordingStartedAt == nil {
                     recordingStartedAt = .now
@@ -82,7 +83,8 @@ final class DictationController {
     private(set) var transcript = ""
     private(set) var streamedText = ""
     private(set) var isStreamingToField = false
-    var showsStreamingPreview: Bool { phase == .processing && !isStreamingToField && !streamedText.isEmpty }
+    private(set) var fallbackPreviewLatched = false
+    var showsStreamingPreview: Bool { phase == .processing && fallbackPreviewLatched }
     @ObservationIgnored private var streamingInsertion: StreamingInsertion?
     @ObservationIgnored private var localPreview = ""
     @ObservationIgnored private var showsLocalPreview = false
@@ -712,6 +714,20 @@ final class DictationController {
             guard resultsToken == token, phase == .processing, !Task.isCancelled else { return }
             isStreamingToField = updated
         }
+        if !isStreamingToField, !text.isEmpty { fallbackPreviewLatched = true }
+    }
+
+    func copyCompletedResult() {
+        guard case .copied(let text) = phase else { return }
+        inserter.keepOnClipboard(text)
+    }
+
+    /// Opt-in HUD diagnostic, without microphone capture or field insertion.
+    func previewPanelForCheck(_ phase: DictationPhase, text: String = "", toField: Bool = false) async {
+        guard CommandLine.arguments.contains("--check-panel") else { return }
+        self.phase = phase
+        isStreamingToField = toField
+        if phase == .processing { await receivePreview(text, token: resultsToken) }
     }
 
     private func noteDraft(_ text: String) -> String {
@@ -753,7 +769,7 @@ final class DictationController {
             }
         }
         // "Check insertion" has to stay up long enough to read.
-        dismissAfterBeat(confirmed ? .milliseconds(700) : .seconds(3))
+        dismissAfterBeat(delivery.destination == .clipboard ? .seconds(2) : confirmed ? .milliseconds(700) : .seconds(3))
     }
 
     private func addLateResult(_ result: CloudResult, token: UUID) {

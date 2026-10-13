@@ -45,6 +45,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 Task { await StreamingCheck.run() }
                 return
             }
+            if let index = CommandLine.arguments.firstIndex(of: "--check-panel"),
+               CommandLine.arguments.indices.contains(index + 1) {
+                let directory = CommandLine.arguments[index + 1]
+                Task { await PanelCheck.run(directory: directory) }
+                return
+            }
             if let index = CommandLine.arguments.firstIndex(of: "--check-electron-insertion"),
                CommandLine.arguments.indices.contains(index + 1) {
                 let directory = CommandLine.arguments[index + 1]
