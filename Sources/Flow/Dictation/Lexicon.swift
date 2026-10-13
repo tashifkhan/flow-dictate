@@ -34,12 +34,15 @@ final class Lexicon {
     struct CustomDetail: Codable, Equatable, Hashable, Identifiable, Sendable {
         var id = UUID()
         var label = ""
+        /// What the value is, for the model: "personal profile link".
+        var description = ""
         var value = ""
         /// Sent as context with every cleanup request, not only when you say it.
         var alwaysInPrompt = false
 
-        init(label: String = "", value: String = "", alwaysInPrompt: Bool = false) {
+        init(label: String = "", description: String = "", value: String = "", alwaysInPrompt: Bool = false) {
             self.label = label
+            self.description = description
             self.value = value
             self.alwaysInPrompt = alwaysInPrompt
         }
@@ -48,6 +51,7 @@ final class Lexicon {
             let values = try decoder.container(keyedBy: CodingKeys.self)
             id = try values.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
             label = try values.decodeIfPresent(String.self, forKey: .label) ?? ""
+            description = try values.decodeIfPresent(String.self, forKey: .description) ?? ""
             value = try values.decodeIfPresent(String.self, forKey: .value) ?? ""
             alwaysInPrompt = try values.decodeIfPresent(Bool.self, forKey: .alwaysInPrompt) ?? false
         }
@@ -81,10 +85,14 @@ final class Lexicon {
 
     private(set) var words: [String] = []
     private(set) var corrections: [Correction] = []
+    /// What a custom word means, keyed by the word in lowercase. Kept apart from
+    /// `words` so the saved word list and speech-model training stay plain strings.
+    private(set) var wordDescriptions: [String: String] = [:]
 
     private let defaults: UserDefaults
     private static let wordsKey = "lexiconWords"
     private static let correctionsKey = "lexiconCorrections"
+    private static let wordDescriptionsKey = "lexiconWordDescriptions"
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -93,6 +101,7 @@ final class Lexicon {
             personalDetails = details
         }
         words = defaults.stringArray(forKey: Self.wordsKey) ?? []
+        wordDescriptions = defaults.dictionary(forKey: Self.wordDescriptionsKey) as? [String: String] ?? [:]
         if let data = defaults.data(forKey: Self.correctionsKey),
            let decoded = try? JSONDecoder().decode([Correction].self, from: data) {
             corrections = decoded
@@ -134,6 +143,17 @@ final class Lexicon {
     func removeWord(_ word: String) {
         words.removeAll { $0 == word }
         persistWords()
+        if !contains(word) { setDescription("", for: word) }
+    }
+
+    func description(for word: String) -> String { wordDescriptions[word.lowercased()] ?? "" }
+
+    func setDescription(_ description: String, for word: String) {
+        let trimmed = description.trimmingCharacters(in: .whitespacesAndNewlines)
+        let key = word.lowercased()
+        guard wordDescriptions[key] ?? "" != trimmed else { return }
+        wordDescriptions[key] = trimmed.isEmpty ? nil : trimmed
+        defaults.set(wordDescriptions, forKey: Self.wordDescriptionsKey)
     }
 
     func record(from: String, to: String) {
@@ -171,9 +191,11 @@ final class Lexicon {
     }
 
     /// Custom details you chose to send with every request, as the model reads them.
-    var promptDetails: [(label: String, value: String)] {
-        personalDetails.custom.filter { $0.alwaysInPrompt && $0.isComplete }
-            .map { ($0.spokenLabel, $0.value.trimmingCharacters(in: .whitespacesAndNewlines)) }
+    var promptDetails: [SpeakerDetail] {
+        personalDetails.custom.filter { $0.alwaysInPrompt && $0.isComplete }.map {
+            SpeakerDetail(name: $0.spokenLabel, description: $0.description.trimmingCharacters(in: .whitespacesAndNewlines),
+                          value: $0.value.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
     }
 
     var recognitionWords: [String] {

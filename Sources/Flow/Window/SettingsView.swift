@@ -368,24 +368,32 @@ struct SettingsView: View {
                 TextField("Company", text: $lexicon.personalDetails.company)
                 TextField("Address", text: $lexicon.personalDetails.address)
                 ForEach($lexicon.personalDetails.custom) { $detail in
-                    HStack(spacing: 8) {
-                        TextField("Field", text: $detail.label, prompt: Text("Field, like GitHub"))
-                            .labelsHidden()
-                            .frame(width: 150)
-                        TextField("Value", text: $detail.value, prompt: Text("Value"))
-                            .labelsHidden()
-                        Toggle("Always tell the model", isOn: $detail.alwaysInPrompt)
-                            .toggleStyle(.checkbox)
-                            .help("Send this with every cleanup request, not only when you say \"my \(detail.spokenLabel.isEmpty ? "field" : detail.spokenLabel)\"")
-                        Button {
-                            lexicon.personalDetails.custom.removeAll { $0.id == detail.id }
-                        } label: {
-                            Image(systemName: "minus.circle")
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(spacing: 8) {
+                            TextField("Name", text: $detail.label, prompt: Text("Name, like GitHub"))
+                                .labelsHidden()
+                                .frame(width: 150)
+                            TextField("Description", text: $detail.description, prompt: Text("Description, like personal profile link"))
+                                .labelsHidden()
+                                .foregroundStyle(.secondary)
+                            Button {
+                                lexicon.personalDetails.custom.removeAll { $0.id == detail.id }
+                            } label: {
+                                Image(systemName: "minus.circle")
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Remove this field")
+                            .accessibilityLabel("Remove \(detail.spokenLabel.isEmpty ? "field" : detail.spokenLabel)")
                         }
-                        .buttonStyle(.borderless)
-                        .help("Remove this field")
-                        .accessibilityLabel("Remove \(detail.spokenLabel.isEmpty ? "field" : detail.spokenLabel)")
+                        HStack(spacing: 8) {
+                            TextField("Value", text: $detail.value, prompt: Text("Value"))
+                                .labelsHidden()
+                            Toggle("Always tell the model", isOn: $detail.alwaysInPrompt)
+                                .toggleStyle(.checkbox)
+                                .help("Send this with every cleanup request, not only when you say \"my \(detail.spokenLabel.isEmpty ? "field" : detail.spokenLabel)\"")
+                        }
                     }
+                    .padding(.vertical, 2)
                 }
                 Button {
                     lexicon.personalDetails.custom.append(.init())
@@ -396,7 +404,7 @@ struct SettingsView: View {
             } header: {
                 Text("Personal details")
             } footer: {
-                Text("Say \"add my email here\" to insert your saved email, or say \"my email\" inside a sentence. Fields you add work the same way, so one named GitHub answers to \"my GitHub\". Empty details stay as spoken. Details stay on this Mac, and a detail goes to your cloud model only when you say it, unless you tick Always tell the model. Then it goes with every request, so the model can spell it and know what you mean.")
+                Text("Say \"add my email here\" to insert your saved email, or say \"my email\" inside a sentence. Fields you add work the same way, so one named GitHub answers to \"my GitHub\". The description tells the model what the value is. Empty details stay as spoken. Details stay on this Mac, and a detail goes to your cloud model only when you say it, unless you tick Always tell the model. Then it goes with every request, so the model can spell it and know what you mean.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section {
@@ -425,7 +433,9 @@ struct SettingsView: View {
                     }
                     FlowLayout(spacing: 6) {
                         ForEach(filteredWords, id: \.self) { word in
-                            WordChip(word: word) { env.lexicon.removeWord(word) }
+                            WordChip(word: word, description: env.lexicon.description(for: word),
+                                     describe: { env.lexicon.setDescription($0, for: word) },
+                                     remove: { env.lexicon.removeWord(word) })
                         }
                     }
                     .padding(.vertical, 4)
@@ -443,7 +453,7 @@ struct SettingsView: View {
                 .buttonStyle(.borderless)
                 .font(.callout)
             } footer: {
-                Text("Given to the recogniser and to the cleanup pass.")
+                Text("Given to the recogniser and to the cleanup pass. Click a word to say what it means; the cleanup prompt then reads it as \"CCADB (Mozilla's Common CA Database)\".")
                     .font(.caption).foregroundStyle(.secondary)
             }
 
@@ -675,12 +685,46 @@ struct SettingsView: View {
 /// A removable word in the vocabulary list.
 private struct WordChip: View {
     var word: String
+    var description: String
+    var describe: (String) -> Void
     var remove: () -> Void
     @State private var hovering = false
+    @State private var editing = false
+    @State private var draft = ""
 
     var body: some View {
         HStack(spacing: 4) {
-            Text(word).font(.callout)
+            Button {
+                draft = description
+                editing = true
+            } label: {
+                HStack(spacing: 4) {
+                    Text(word).font(.callout)
+                    if !description.isEmpty {
+                        Image(systemName: "text.bubble")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+            .help(description.isEmpty ? "Add what \(word) means" : description)
+            .accessibilityLabel(description.isEmpty ? word : "\(word), \(description)")
+            .accessibilityHint("Edit the description")
+            .popover(isPresented: $editing, arrowEdge: .bottom) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(word).font(.headline)
+                    TextField("Description", text: $draft, prompt: Text("What it means, like Mozilla's Common CA Database"))
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 300)
+                        .onSubmit { editing = false }
+                    Text("Sent with the word whenever it appears in a dictation.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(14)
+                .onDisappear { describe(draft) }
+            }
             Button(action: remove) {
                 Image(systemName: "xmark.circle.fill")
             }

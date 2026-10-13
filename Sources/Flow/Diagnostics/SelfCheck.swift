@@ -765,7 +765,7 @@ enum SelfCheck {
         expect(Lexicon(defaults: lexiconDefaults).personalDetails == lexicon.personalDetails, "personal details survive a reload")
         expect(Lexicon(defaults: lexiconDefaults).substitutions.apply("ta shif") == "Tashif", "replacement rules survive a reload")
         lexicon.personalDetails.custom = [
-            .init(label: "GitHub", value: "github.com/tashifkhan", alwaysInPrompt: true),
+            .init(label: "GitHub", description: "personal profile link", value: "github.com/tashifkhan", alwaysInPrompt: true),
             .init(label: "my work email", value: "tashif@work.example"),
             .init(label: "Empty", value: "  "),
         ]
@@ -774,11 +774,20 @@ enum SelfCheck {
         expect(custom.apply("Send it to my work email.") == "Send it to tashif@work.example.", "a field named with \"my\" still matches once")
         expect(custom.apply("Check my empty") == "Check my empty", "a field without a value stays as spoken")
         expect(custom.apply("My GitHub is down") == "My GitHub is down", "statements about a custom field stay as spoken")
-        expect(lexicon.promptDetails.map(\.label) == ["GitHub"], "only fields marked Always tell the model reach every prompt")
-        let aboutSpeaker = DictationCleanupPolicy.speakerDetails(lexicon.promptDetails) ?? ""
-        expect(aboutSpeaker.contains("their GitHub is github.com/tashifkhan") && !aboutSpeaker.contains("work"),
-               "the prompt names the chosen fields and leaves the rest out")
-        expect(DictationCleanupPolicy.speakerDetails([]) == nil, "no fields add nothing to the prompt")
+        expect(lexicon.promptDetails.map(\.name) == ["GitHub"], "only fields marked Always tell the model reach every prompt")
+        let aboutSpeaker = DictationCleanupPolicy.speakerLine(lexicon.promptDetails) ?? ""
+        expect(aboutSpeaker.contains("their GitHub (personal profile link) is github.com/tashifkhan") && !aboutSpeaker.contains("work"),
+               "the prompt names the chosen fields with their descriptions and leaves the rest out")
+        expect(DictationCleanupPolicy.speakerLine([]) == nil, "no fields add nothing to the prompt")
+        lexicon.addWord("CCADB")
+        lexicon.setDescription(" Mozilla's Common CA Database ", for: "ccadb")
+        expect(lexicon.description(for: "CCADB") == "Mozilla's Common CA Database", "a word keeps its trimmed description")
+        expect(Lexicon(defaults: lexiconDefaults).description(for: "ccadb") == "Mozilla's Common CA Database", "word descriptions survive a reload")
+        expect(DictationCleanupPolicy.termsLine(["CCADB", "Wrangler"], descriptions: lexicon.wordDescriptions)
+               == "Spell these names and terms exactly: CCADB (Mozilla's Common CA Database), Wrangler.",
+               "described words carry their description into the prompt")
+        lexicon.removeWord("CCADB")
+        expect(lexicon.description(for: "CCADB").isEmpty, "removing a word removes its description")
         expect(Lexicon(defaults: lexiconDefaults).personalDetails.custom == lexicon.personalDetails.custom, "custom fields survive a reload")
         let legacy = Data(#"{"name":"Tashif","email":"person@example.com","phone":"","company":"","address":""}"#.utf8)
         let decoded = try? JSONDecoder().decode(Lexicon.PersonalDetails.self, from: legacy)
@@ -789,6 +798,47 @@ enum SelfCheck {
         expect(nonCascading.apply("alpha beta") == "beta gamma", "replacement values do not trigger another rule")
         let ambiguous = DictationSubstitutions(vocabulary: ["Tashif", "Tashim"])
         expect(ambiguous.apply("Tashin") == "Tashin", "ambiguous vocabulary corrections stay unchanged")
+
+        // MARK: Prompts
+
+        section("prompt templates")
+        let template = try? PromptTemplate(id: "check", source: "Hello {name}, {{literal}}.\n{optional}\nEnd {name}")
+        expect((try? template?.render(["name": "Tashif", "optional": ""])) == "Hello Tashif, {literal}.\nEnd Tashif",
+               "placeholders fill, double braces stay literal, and an empty placeholder line disappears")
+        expect((try? template?.render(["name": "x"])) == nil, "a missing value is an error")
+        expect((try? template?.render(["name": "x", "optional": "", "typo": ""])) == nil, "an unused value is an error")
+        expect((try? PromptTemplate(id: "check", source: "a } b")) == nil, "a lone closing brace is an error")
+        expect((try? PromptTemplate(id: "check", source: "{Bad Name}")) == nil, "a malformed placeholder is an error")
+        let parsed = try? PromptLibrary.sections(in: "; comment\n[first]\n\nline one\nline two\n\n[second]\nonly\n", file: "check.txt")
+        expect(parsed?.map(\.0) == ["first", "second"] && parsed?.first?.1 == "line one\nline two",
+               "sections drop comments and blank edge lines and keep inner line breaks")
+        expect((try? PromptLibrary.sections(in: "stray\n[first]\nx", file: "check.txt")) == nil, "text before the first section is an error")
+        let bundled = try? PromptLibrary.load(from: PromptLibrary.directory)
+        expect((bundled?.count ?? 0) > 20, "the bundled prompt files load")
+        expect(PromptLibrary.instructionIDs.allSatisfy { bundled?[$0] != nil }, "every prompt the code asks for exists")
+        expect(bundled.map { Set($0.keys).subtracting(PromptLibrary.instructionIDs).isEmpty } == true,
+               "every prompt in the files is used")
+        var promptContext = CleanupContext(appName: "Slack", bundleID: "com.tinyspeck.slackmacgap", axRole: "AXTextArea",
+                                           appDescription: WritingContext.chat.description, writingContext: .chat,
+                                           transcriptionLanguage: .system)
+        promptContext.vocabulary = ["CCADB"]
+        promptContext.termDescriptions = ["ccadb": "Mozilla's Common CA Database"]
+        promptContext.corrections = [(said: "ta shif", meant: "Tashif")]
+        promptContext.speakerDetails = [SpeakerDetail(name: "GitHub", value: "github.com/tashifkhan")]
+        let cloudPrompt = CloudService.refinementInstruction(promptContext)
+        expect(cloudPrompt.hasPrefix(DictationCleanupPolicy.instruction + "\nThe text goes into Slack, a chat or messaging app. Keep casual wording"),
+               "the cloud prompt starts with the shared rules and the destination")
+        expect(cloudPrompt.contains("CCADB (Mozilla's Common CA Database)") && cloudPrompt.contains("\"ta shif\" as \"Tashif\"")
+               && cloudPrompt.contains("their GitHub is github.com/tashifkhan"), "the cloud prompt carries terms, replacements, and details")
+        let localPrompt = CleanupService.instructions(for: promptContext)
+        expect(localPrompt.contains("in a AXTextArea field.\nWrite it like a casual message.") && !localPrompt.contains("Devanagari")
+               && !localPrompt.contains("\n\n") && !localPrompt.contains("{"),
+               "the local prompt fills every slot and leaves no gaps for missing pieces")
+        promptContext.transcriptionLanguage = .hinglish
+        expect(CleanupService.instructions(for: promptContext).contains("never Devanagari")
+               && CloudService.refinementInstruction(promptContext).contains("Roman-script Hinglish"), "Hinglish adds its rules to both prompts")
+        expect(DictationCleanupPolicy.instruction.contains("Writing: We need three changes:\n1. Fix login.\n2. Add tests."),
+               "multi-line examples keep their line breaks")
 
         // MARK: Decisions
 

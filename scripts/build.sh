@@ -33,6 +33,10 @@ else
     echo "note: actool not found (needs Xcode); building without an app icon."
 fi
 
+# Every prompt Flow sends, as plain text. The app reads them from Resources/Prompts.
+mkdir -p "$APP_BUNDLE/Contents/Resources/Prompts"
+install -m 644 "$PROJECT_ROOT"/Prompts/*.txt "$APP_BUNDLE/Contents/Resources/Prompts/"
+
 SIGNING_IDENTITY="${FLOW_SIGNING_IDENTITY:-Flow Dev}"
 KEYCHAIN_NAME="${FLOW_KEYCHAIN_NAME:-flow-dev.keychain}"
 KEYCHAIN_PASSWORD="${FLOW_KEYCHAIN_PASSWORD:-flow-local}"
