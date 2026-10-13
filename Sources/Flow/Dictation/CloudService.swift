@@ -42,6 +42,21 @@ final class NetworkStatus: @unchecked Sendable {
 }
 
 actor CloudService {
+    private struct StreamingKey: Hashable {
+        var providerID: UUID
+        var api: CloudAPI
+        var baseURL: String
+        var modelID: String
+        var path: String
+        var reasoning: CloudReasoning
+    }
+    private var streamingSupport: [StreamingKey: Bool] = [:]
+    private var usageOptionsSupport: [StreamingKey: Bool] = [:]
+
+    func resetStreamingSupport(providerID: UUID) {
+        streamingSupport = streamingSupport.filter { $0.key.providerID != providerID }
+        usageOptionsSupport = usageOptionsSupport.filter { $0.key.providerID != providerID }
+    }
     private let recordRequest: @Sendable (CloudRequestRecord) -> Void
     init(recordRequest: @escaping @Sendable (CloudRequestRecord) -> Void = { request in
         Task { @MainActor in AppEnvironment.shared.library.recordRequest(request) }
@@ -362,18 +377,22 @@ actor CloudService {
     private func sendJSON(
         _ account: CloudProvider, _ model: CloudModel, path: String, payload: [String: Any], scope: Scope, preview: @escaping Preview = { _ in }
     ) async throws -> [String: Any] {
-        var streaming = true
+        let key = StreamingKey(providerID: account.id, api: account.api, baseURL: account.baseURL,
+                               modelID: model.modelID, path: path, reasoning: model.reasoning)
+        var streaming = account.streaming == .automatic && streamingSupport[key] != false
+        var usageOptions = usageOptionsSupport[key] != false
         var reasoning = model.reasoning != .automatic
         while true {
             var tuned = payload
             if reasoning { Self.applyReasoning(model, api: account.api, to: &tuned) }
             var endpoint = path
             var query: [(String, String)] = []
+            if account.api != .google { tuned["stream"] = streaming }
             if streaming {
                 switch account.api {
                 case .openAI:
                     tuned["stream"] = true
-                    tuned["stream_options"] = ["include_usage": true]
+                    if usageOptions { tuned["stream_options"] = ["include_usage": true] }
                 case .anthropic: tuned["stream"] = true
                 case .google:
                     endpoint = path.replacingOccurrences(of: ":generateContent", with: ":streamGenerateContent")
@@ -386,15 +405,21 @@ actor CloudService {
                 request.httpBody = try JSONSerialization.data(withJSONObject: tuned)
                 request.setValue("application/json", forHTTPHeaderField: "Content-Type")
                 if streaming { request.setValue("text/event-stream", forHTTPHeaderField: "Accept") }
-                return try await perform(request, provider: account, modelID: model.modelID, scope: scope, preview: preview)
-            } catch CloudError.http(let status) where [400, 404, 422].contains(status) {
-                if streaming {
-                    await preview("")
-                    streaming = false
-                    log.notice("\(account.name, privacy: .public) rejected streaming; retrying as JSON")
-                } else if reasoning && status != 404 {
+                let json = try await perform(request, provider: account, modelID: model.modelID, scope: scope,
+                                             preview: preview, allowStreaming: streaming,
+                                             streamingKey: account.streaming == .automatic ? key : nil)
+                if streaming, !usageOptions { usageOptionsSupport[key] = false }
+                return json
+            } catch CloudError.http(let status) where [400, 404, 405, 406, 415, 422, 501].contains(status) {
+                if streaming, usageOptions, account.api == .openAI, [400, 422].contains(status) {
+                    // Older compatible servers stream text but reject optional usage.
+                    usageOptions = false
+                } else if reasoning && [400, 422].contains(status) {
                     reasoning = false
                     log.notice("\(account.name, privacy: .public) rejected reasoning; retrying with model defaults")
+                } else if streaming {
+                    streaming = false
+                    log.notice("\(account.name, privacy: .public) rejected streaming; retrying as JSON")
                 } else { throw CloudError.http(status) }
             }
         }
@@ -446,7 +471,8 @@ actor CloudService {
     }
 
     private func perform(_ request: URLRequest, provider: CloudProvider,
-                         modelID: String, scope: Scope, preview: @escaping Preview = { _ in }) async throws -> [String: Any] {
+                         modelID: String, scope: Scope, preview: @escaping Preview = { _ in },
+                         allowStreaming: Bool = false, streamingKey: StreamingKey? = nil) async throws -> [String: Any] {
         var record = CloudRequestRecord(dictationID: scope.dictationID, configID: scope.configID,
                                         configLabel: scope.label, providerID: provider.id,
                                         providerName: provider.name, modelID: modelID, stage: scope.stage)
@@ -481,7 +507,8 @@ actor CloudService {
                 throw CloudError.http(record.httpStatus ?? 0)
             }
             let json: [String: Any]
-            if http.value(forHTTPHeaderField: "Content-Type")?.lowercased().contains("text/event-stream") == true {
+            let isStream = http.value(forHTTPHeaderField: "Content-Type")?.lowercased().contains("text/event-stream") == true
+            if isStream {
                 var count = 0
                 var visibleCount = 0
                 var lastPreview = start
@@ -490,7 +517,7 @@ actor CloudService {
                     count += 1
                     if count > 16_000_000 { throw CloudError.invalidResponse }
                     try stream.byte(byte, elapsed: (ContinuousClock.now - start).timeInterval)
-                    if stream.text.utf8.count != visibleCount,
+                    if allowStreaming, stream.text.utf8.count != visibleCount,
                        visibleCount == 0 || ContinuousClock.now - lastPreview >= .milliseconds(50) {
                         visibleCount = stream.text.utf8.count
                         lastPreview = .now
@@ -499,7 +526,7 @@ actor CloudService {
                 }
                 try stream.finish(elapsed: (ContinuousClock.now - start).timeInterval)
                 json = try stream.responseJSON()
-                await preview(stream.text)
+                if allowStreaming { await preview(stream.text) }
             } else {
                 var data = Data()
                 for try await byte in bytes {
@@ -513,6 +540,7 @@ actor CloudService {
                 json = object
                 record.usage = TokenUsage.parse(json, api: provider.api)
             }
+            if let streamingKey { streamingSupport[streamingKey] = allowStreaming && isStream }
             if scope.stage == .models { record.usage = TokenUsage(input: 0, output: 0) }
             if record.isInference { record.outputWords = Self.outputWordCount(json, api: provider.api) }
             record.status = .succeeded

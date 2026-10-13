@@ -6,12 +6,34 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
 class Handler(BaseHTTPRequestHandler):
+    requests = []
+
     def log_message(self, *_):
         pass
+
+    def do_GET(self):
+        data = json.dumps(self.requests).encode()
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
         model = body.get('model', self.path.split('models/')[-1].split(':')[0])
+        streamed = bool(body.get('stream') or 'streamGenerateContent' in self.path)
+        self.requests.append({'model': model, 'stream': streamed, 'path': self.path,
+                              'accept': self.headers.get('Accept', ''), 'usageOptions': 'stream_options' in body,
+                              'streamField': body.get('stream')})
+        if model == 'reject-usage-options' and 'stream_options' in body:
+            self.send_response(400)
+            self.end_headers()
+            return
+        if model == 'reject-reasoning' and 'reasoning_effort' in body:
+            self.send_response(400)
+            self.end_headers()
+            return
         if model == 'multimodal-transcriber':
             parts = body.get('messages', [{}])[0].get('content', [])
             if not self.path.endswith('/chat/completions') or not any(p.get('type') == 'input_audio' for p in parts):
@@ -22,13 +44,19 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(429)
             self.end_headers()
             return
-        if model == 'reject-stream':
-            if body.get('stream'):
-                self.send_response(400)
+        if model in ['reject-stream', 'reject-stream-google', 'reject-stream-anthropic', 'ignore-stream', 'disabled-json']:
+            if streamed and model != 'ignore-stream':
+                self.send_response(501 if model == 'reject-stream' else 405 if model == 'reject-stream-google' else 400)
                 self.end_headers()
                 return
-            data = json.dumps({'choices': [{'message': {'content': 'Hello world.'}}],
-                               'usage': {'prompt_tokens': 100, 'completion_tokens': 20}}).encode()
+            if 'models/' in self.path:
+                result = {'candidates': [{'content': {'parts': [{'text': 'Hello world.'}]}}]}
+            elif self.path.endswith('/messages'):
+                result = {'content': [{'type': 'text', 'text': 'Hello world.'}]}
+            else:
+                result = {'choices': [{'message': {'content': 'Hello world.'}}],
+                          'usage': {'prompt_tokens': 100, 'completion_tokens': 20}}
+            data = json.dumps(result).encode()
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.send_header('Content-Length', str(len(data)))
@@ -44,7 +72,7 @@ class Handler(BaseHTTPRequestHandler):
             time.sleep(0.4)
         if model == 'cancel':
             time.sleep(0.4)
-        if 'streamGenerateContent' in self.path:
+        if 'models/' in self.path:
             events = [{'candidates': [{'content': {'parts': [{'text': 'Hello'}]}}]},
                       {'candidates': [{'content': {'parts': [{'text': ' world.'}]}, 'finishReason': 'STOP'}],
                        'usageMetadata': {'promptTokenCount': 100, 'candidatesTokenCount': 20}}]

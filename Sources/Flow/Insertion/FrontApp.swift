@@ -292,13 +292,45 @@ struct FrontApp: Sendable {
     static func focusedElement(pid: pid_t) -> AXUIElement? {
         // System-wide focus names the keyboard's actual recipient. An app's own
         // AXFocusedUIElement can describe a stale responder, so it is only the fallback.
-        if let focus = systemFocus(), focus.appPID == pid, let element = focus.element { return element }
+        let focus = systemFocus()
+        if focus?.appPID == pid, let element = focus?.element,
+           !["AXWindow", "AXWebArea", "AXGroup"].contains(string(element, kAXRoleAttribute) ?? "") { return element }
         let app = AXUIElementCreateApplication(pid)
         var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(app, kAXFocusedUIElementAttribute as CFString, &value) == .success,
-              let value,
-              CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
-        return unsafeDowncast(value, to: AXUIElement.self)
+        if AXUIElementCopyAttributeValue(app, kAXFocusedUIElementAttribute as CFString, &value) == .success,
+           let value, CFGetTypeID(value) == AXUIElementGetTypeID() {
+            let element = unsafeDowncast(value, to: AXUIElement.self)
+            if !["AXWindow", "AXWebArea", "AXGroup"].contains(string(element, kAXRoleAttribute) ?? "") { return element }
+        }
+        // Chromium can omit AXFocusedUIElement while its text area still publishes
+        // AXFocused in the window tree. Only search the keyboard owner's window.
+        if focus?.appPID == pid, let window = focusedWindow(of: app),
+           let field = focusedTextDescendant(in: window) { return field }
+        return focus?.appPID == pid ? focus?.element : nil
+    }
+
+    static func focusedTextDescendant(in window: AXUIElement) -> AXUIElement? {
+        var queue = [window]
+        var index = 0
+        var found: AXUIElement?
+        let deadline = ProcessInfo.processInfo.systemUptime + 0.15
+        while index < queue.count, index < 4000 {
+            guard ProcessInfo.processInfo.systemUptime < deadline else { return nil }
+            let element = queue[index]
+            index += 1
+            var focused: CFTypeRef?
+            if roleAcceptsText(string(element, kAXRoleAttribute) ?? ""),
+               AXUIElementCopyAttributeValue(element, kAXFocusedAttribute as CFString, &focused) == .success,
+               focused as? Bool == true {
+                // Ambiguous focus is not permission to write into either field.
+                guard found == nil else { return nil }
+                found = element
+            }
+            var children: CFTypeRef?
+            if AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &children) == .success,
+               let children = children as? [AXUIElement] { queue.append(contentsOf: children.prefix(4000 - queue.count)) }
+        }
+        return index == queue.count ? found : nil
     }
 
     private static func focusedWindow(of app: AXUIElement) -> AXUIElement? {
@@ -378,7 +410,7 @@ struct FrontApp: Sendable {
     /// without the page's input handlers ever hearing about it.
     private static func isInsideWebArea(_ element: AXUIElement) -> Bool {
         var current = element
-        for _ in 0..<12 {
+        for _ in 0..<32 {
             if string(current, kAXRoleAttribute) == "AXWebArea" { return true }
             var parent: CFTypeRef?
             guard AXUIElementCopyAttributeValue(current, kAXParentAttribute as CFString, &parent) == .success,

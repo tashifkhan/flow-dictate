@@ -17,6 +17,7 @@ enum SelfCheck {
     @MainActor
     static func checkInsertion(output: String) async {
         let previousApp = NSWorkspace.shared.frontmostApplication
+        NSApp.setActivationPolicy(.regular)
         let window = NSWindow(contentRect: NSRect(x: 200, y: 200, width: 500, height: 180),
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.title = "Flow insertion check"
@@ -52,7 +53,8 @@ enum SelfCheck {
             // Force the paste path while retaining the actual focus classification.
             var pasteTarget = target
             pasteTarget.isElectron = true
-            guard target.bundleID == Bundle.main.bundleIdentifier, target.hasTextTarget else {
+            guard target.processID == ProcessInfo.processInfo.processIdentifier,
+                  target.bundleID == Bundle.main.bundleIdentifier, target.hasTextTarget else {
                 throw Inserter.InsertError.empty
             }
             let expected = "Flow insertion check"
@@ -63,32 +65,43 @@ enum SelfCheck {
             report["insertedInTextField"] = inserted
             report["destination"] = String(describing: result.destination)
             var streamed = true
-            for unicode in [false, true] {
+            for usesPaste in [false, true] {
                 view.string = "Before old after"
                 view.setSelectedRange(NSRange(location: 7, length: 3))
                 try? await Task.sleep(for: .milliseconds(100))
                 await Inserter().waitForModifierRelease()
-                report["\(unicode ? "unicode" : "native")ModifiersHeld"] = Inserter.modifiersAreHeld
+                report["\(usesPaste ? "paste" : "native")ModifiersHeld"] = Inserter.modifiersAreHeld
                 var streamTarget = FrontApp.current()
-                streamTarget.isElectron = unicode
-                let label = unicode ? "unicode" : "native"
+                streamTarget.isElectron = usesPaste
+                let label = usesPaste ? "paste" : "native"
                 if let stream = StreamingInsertion.capture(in: streamTarget) {
                     let first = await stream.update("Hello")
-                    report["\(label)FirstChunk"] = first && view.string == "Before Hello after"
+                    let firstLanded = first && view.string == "Before Hello after"
+                    report["\(label)FirstChunk"] = firstLanded
                     let next = await stream.update("Hello 👩🏽‍💻\nworld")
-                    report["\(label)Incremental"] = next && view.string == "Before Hello 👩🏽‍💻\nworld after"
+                    let nextLanded = next && view.string == "Before Hello 👩🏽‍💻\nworld after"
+                    report["\(label)Incremental"] = nextLanded
                     let final = await stream.update("Hi 👩🏽‍💻\nworld!")
-                    report["\(label)Reconciled"] = final && view.string == "Before Hi 👩🏽‍💻\nworld! after"
+                    let finalLanded = final && view.string == "Before Hi 👩🏽‍💻\nworld! after"
+                    report["\(label)Reconciled"] = finalLanded
                     let rollback = await stream.rollback()
-                    report["\(label)Cancelled"] = rollback && view.string == "Before old after"
-                    streamed = streamed && first && next && final && rollback
+                    let restored = rollback && view.string == "Before old after"
+                    report["\(label)Cancelled"] = restored
+                    streamed = streamed && firstLanded && nextLanded && finalLanded && restored
                 } else {
                     report["\(label)StreamingCapture"] = false
                     streamed = false
                 }
             }
             let webView = WKWebView(frame: view.frame)
-            window.contentView = webView
+            // Replacing the key window's NSTextView leaves its old AX responder
+            // published briefly. A separate window makes this a real web check.
+            window.makeFirstResponder(nil)
+            let webWindow = NSWindow(contentRect: window.frame, styleMask: [.titled], backing: .buffered, defer: false)
+            webWindow.title = "Flow web insertion check"
+            webWindow.isReleasedWhenClosed = false
+            webWindow.contentView = webView
+            defer { webWindow.close() }
             webView.loadHTMLString("""
                 <textarea id="editor" style="width:90%;height:100px"></textarea>
                 <script>window.inputEvents = 0;
@@ -98,12 +111,15 @@ enum SelfCheck {
                 if (try? await webView.evaluateJavaScript("document.getElementById('editor') !== null")) as? Bool == true { break }
                 try? await Task.sleep(for: .milliseconds(40))
             }
-            window.makeFirstResponder(webView)
-            window.makeKeyAndOrderFront(nil)
+            webWindow.makeKeyAndOrderFront(nil)
+            webWindow.makeFirstResponder(webView)
             NSApp.activate(ignoringOtherApps: true)
+            window.orderOut(nil)
             _ = try await webView.evaluateJavaScript("editor.value = 'Before old after'; editor.focus(); editor.setSelectionRange(7,10)")
             for _ in 0..<25 {
-                if FrontApp.current().hasTextTarget { break }
+                let target = FrontApp.current()
+                if target.processID == ProcessInfo.processInfo.processIdentifier,
+                   target.hasTextTarget && target.isWebContent { break }
                 try? await Task.sleep(for: .milliseconds(40))
             }
             let webTarget = FrontApp.current()
@@ -112,10 +128,16 @@ enum SelfCheck {
             report["webTextTarget"] = webTarget.hasTextTarget
             report["webContent"] = webTarget.isWebContent
             report["webModifiersHeld"] = Inserter.modifiersAreHeld
-            if let stream = StreamingInsertion.capture(in: webTarget) {
+            if webTarget.processID == ProcessInfo.processInfo.processIdentifier,
+               webTarget.isWebContent, let stream = StreamingInsertion.capture(in: webTarget) {
                 let first = await stream.update("Hello")
+                report["webFirst"] = first
+                report["webFirstText"] = try await webView.evaluateJavaScript("editor.value")
                 let next = await stream.update("Hello 👩🏽‍💻\nworld")
+                report["webNext"] = next
+                report["webNextText"] = try await webView.evaluateJavaScript("editor.value")
                 let final = await stream.update("Hi 👩🏽‍💻\nworld!")
+                report["webFinal"] = final
                 let browserText = try await webView.evaluateJavaScript("editor.value") as? String
                 let inputEvents = try await webView.evaluateJavaScript("window.inputEvents") as? Int ?? 0
                 report["webIncremental"] = first && next && final && browserText == "Before Hi 👩🏽‍💻\nworld! after"
@@ -123,6 +145,7 @@ enum SelfCheck {
                 let rollback = await stream.rollback()
                 let restored = try await webView.evaluateJavaScript("editor.value") as? String
                 report["webCancelled"] = rollback && restored == "Before old after"
+                report["webRestoredText"] = restored
                 streamed = streamed && first && next && final && rollback && inputEvents > 0
             } else {
                 // Some WebKit hosts expose only their window to AX. They follow the
@@ -169,7 +192,7 @@ enum SelfCheck {
             report["error"] = "not running"
             return
         }
-        target.activate()
+        target.activate(options: [.activateAllWindows])
         try? await Task.sleep(for: .seconds(1.5))
         report["frontmost"] = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? ""
 
@@ -223,6 +246,10 @@ enum SelfCheck {
             guard AXUIElementCopyAttributeValue(app, kAXFocusedWindowAttribute as CFString, &windowValue) == .success,
                   let windowValue, CFGetTypeID(windowValue) == AXUIElementGetTypeID() else { return }
             var queue = [unsafeDowncast(windowValue, to: AXUIElement.self)]
+            let start = ContinuousClock.now
+            let fallback = FrontApp.focusedTextDescendant(in: queue[0])
+            report["focusedTextFallback"] = ["role": fallback.flatMap { FrontApp.string($0, kAXRoleAttribute) } ?? "",
+                                             "seconds": (ContinuousClock.now - start).timeInterval]
             var visited = 0
             var found: [[String: Any]] = []
             var roles: [String: Int] = [:]
@@ -1018,6 +1045,16 @@ enum SelfCheck {
             let decoded = encoded.flatMap { try? JSONDecoder().decode(CloudSettings.self, from: $0) }
             expect(decoded?.configs.map(\.id) == config.configs.map(\.id) && decoded?.useCloud == true,
                    "the ladder survives relaunch")
+            var disabled = openAI
+            disabled.streaming = .disabled
+            let disabledData = try? JSONEncoder().encode(disabled)
+            expect(disabledData.flatMap { try? JSONDecoder().decode(CloudProvider.self, from: $0) }?.streaming == .disabled,
+                   "a provider's streaming Off setting survives relaunch")
+            var legacyProvider = (try? JSONSerialization.jsonObject(with: JSONEncoder().encode(openAI))) as? [String: Any]
+            legacyProvider?.removeValue(forKey: "streaming")
+            let legacyData = legacyProvider.flatMap { try? JSONSerialization.data(withJSONObject: $0) }
+            expect(legacyData.flatMap { try? JSONDecoder().decode(CloudProvider.self, from: $0) }?.streaming == .automatic,
+                   "existing providers default to automatic streaming")
 
             // Settings saved by the per-step ladders turn into configs.
             let old: [String: Any] = [

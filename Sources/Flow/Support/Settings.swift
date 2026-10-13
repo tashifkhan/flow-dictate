@@ -88,6 +88,9 @@ enum TranscriptionLanguage: String, CaseIterable, Identifiable, Sendable {
 @MainActor @Observable
 final class Settings {
     static let shared = Settings()
+    static let isDiagnosticRun = ["--self-check", "--check-streaming", "--check-cloud-http", "--probe-focus",
+                                  "--check-insertion", "--check-cloud-live", "--check-electron-insertion",
+                                  "--check-target-insertion"].contains(where: CommandLine.arguments.contains)
 
     private let defaults = UserDefaults.standard
 
@@ -328,8 +331,7 @@ final class Settings {
         ) { _ in
             MainActor.assumeIsolated { Settings.shared.flushKeys() }
         }
-        let diagnosticFlags = ["--self-check", "--check-streaming", "--check-cloud-http", "--probe-focus", "--check-insertion", "--check-cloud-live"]
-        if !diagnosticFlags.contains(where: CommandLine.arguments.contains) {
+        if !Self.isDiagnosticRun {
             Task { await self.loadCloudKeys() }
         }
     }

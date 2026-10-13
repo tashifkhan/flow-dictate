@@ -82,7 +82,7 @@ final class DictationController {
     private(set) var transcript = ""
     private(set) var streamedText = ""
     private(set) var isStreamingToField = false
-    var showsStreamingPreview: Bool { phase == .processing && !isStreamingToField }
+    var showsStreamingPreview: Bool { phase == .processing && !isStreamingToField && !streamedText.isEmpty }
     @ObservationIgnored private var streamingInsertion: StreamingInsertion?
     @ObservationIgnored private var localPreview = ""
     @ObservationIgnored private var showsLocalPreview = false
@@ -111,6 +111,10 @@ final class DictationController {
     private let pipeline = SpeechPipeline()
     private let cleanup = CleanupService()
     private let cloud = CloudService()
+
+    func resetStreamingSupport(providerID: UUID) {
+        Task { await cloud.resetStreamingSupport(providerID: providerID) }
+    }
     private let inserter = Inserter()
     private let library: Library
     private let lexicon: Lexicon
@@ -612,7 +616,7 @@ final class DictationController {
                 let checkable = decision.mode == .insert || decision.mode == .format
                 let caret = checkable ? inserter.caretSnapshot(for: current) : nil
                 let delivery: Inserter.Result
-                if let stream = self.streamingInsertion, checkable {
+                if let stream = self.streamingInsertion, checkable, stream.didWrite {
                     let updated = await stream.update(decision.text)
                     guard !Task.isCancelled, self.resultsToken == token else { return }
                     if updated {
@@ -623,6 +627,8 @@ final class DictationController {
                     }
                     self.streamingInsertion = nil
                 } else {
+                    self.isStreamingToField = false
+                    self.streamingInsertion = nil
                     // Commands have no partial insertion. A failed stream never pastes
                     // the full answer into a newly focused field.
                     if checkable, self.deliveryFocus?.isCurrent != true {
