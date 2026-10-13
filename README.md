@@ -195,6 +195,17 @@ after a denied request. Loading an existing key does not rewrite it.
 Voice commands ride the same round trip as ordinary dictation: "scratch that",
 "replace X with Y", "new paragraph".
 
+Settings › Vocabulary includes saved name, email, phone, company, and address fields.
+Say "add my email here" to insert your saved email, or include "my email" in a sentence
+to expand it there. Direct requests insert the exact saved value without a model call.
+Empty details stay as spoken. Replacements under "Heard as" and
+"Write instead" run locally, including when cleanup is disabled. All saved rules
+apply, and replacement values do not trigger further rules. A single-word vocabulary
+entry can also fix an unambiguous recognition error within one letter edit. Add an
+explicit replacement for other pronunciations or names split into multiple words.
+Details stay in local preferences. Expanded details in a sentence become part of
+the input when cloud cleanup runs. Apple raw transcription stays unchanged in history.
+
 If no editable text field has focus, Flow leaves the finished text on the clipboard
 and says "Copied to clipboard" in the panel. It does not send a paste shortcut to the
 frontmost window. Zed is the exception: its GPU-drawn editor exposes no text

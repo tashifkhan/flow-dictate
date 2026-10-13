@@ -155,12 +155,17 @@ actor CloudService {
             guard job.refine, !CleanupService.soundsLikeCommand(job.localRaw) else { throw CloudError.skipped }
             guard job.audio.count > 44 else { throw CloudError.noAudio }
             progress("Writing with \(route.label)")
-            let context = await makeContext(job.localRaw)
+            var context = await makeContext(job.localRaw)
+            // The audio writer preserves alias phrases. Resolve explicit user rules
+            // once here, after transcription, just as the two-pass route does.
+            context.corrections = []
             let text = try await onePass(job.audio, route: route, context: context, scope: scope)
-            guard job.localRaw.isEmpty || Self.faithful(text, to: job.localRaw, language: job.language) else {
+            let resolved = context.substitutions.apply(text)
+            guard job.localRaw.isEmpty || (Self.faithful(resolved, to: context.substitutions.apply(job.localRaw), language: job.language)
+                && context.substitutions.preservesValues(in: resolved, source: job.localRaw)) else {
                 throw CloudError.strayed
             }
-            return RungOutcome(label: label, raw: job.localRaw.isEmpty ? text : job.localRaw, text: text,
+            return RungOutcome(label: label, raw: job.localRaw.isEmpty ? text : job.localRaw, text: resolved,
                                usesCloud: true, configID: rung.id)
 
         case .twoPass(let transcriber, let refiner):
@@ -176,8 +181,10 @@ actor CloudService {
             }
             progress("Refining with \(refiner.label)")
             let context = await makeContext(raw)
-            let text = try await refine(raw, route: refiner, context: context, scope: scope.stage(.refinement))
-            guard Self.faithful(text, to: raw, language: job.language) else { throw CloudError.strayed }
+            let resolvedRaw = context.substitutions.apply(raw)
+            let text = context.substitutions.normalizeVocabulary(in: try await refine(resolvedRaw, route: refiner, context: context, scope: scope.stage(.refinement)))
+            guard Self.faithful(text, to: resolvedRaw, language: job.language),
+                  context.substitutions.preservesValues(in: text, source: raw) else { throw CloudError.strayed }
             return RungOutcome(label: label, raw: raw, text: text, usesCloud: true, configID: rung.id)
         }
     }

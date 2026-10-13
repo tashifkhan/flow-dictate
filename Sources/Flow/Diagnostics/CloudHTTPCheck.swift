@@ -74,6 +74,28 @@ enum CloudHTTPCheck {
         try? await Task.sleep(for: .milliseconds(1300))
         checks["parallel late output and request retain their IDs"] = collector.results.contains { $0.configID == slow.id }
             && collector.requests.contains { $0.configID == slow.id && $0.dictationID == id && $0.status == .succeeded }
+        var emailJob = job
+        emailJob.localRaw = "Add my email here"
+        var emailContext = context
+        emailContext.substitutions = DictationSubstitutions(rules: [.init(from: "my email", to: "person@example.com")])
+        let savedEmailContext = emailContext
+        let emailResult = await service.run([rung(.openAI, "echo-input")], job: emailJob,
+                                            makeContext: { _ in savedEmailContext }, progress: { _ in }, late: { _ in })
+        checks["saved email reaches the refiner and survives source validation"] = emailResult?.text == "person@example.com"
+        let wrongEmail = rung(.openAI, "wrong-email")
+        let correctEmail = rung(.openAI, "echo-input")
+        let faithfulEmail = await service.run([wrongEmail, correctEmail], job: emailJob,
+                                              makeContext: { _ in savedEmailContext }, progress: { _ in }, late: { _ in })
+        checks["a changed saved email is rejected even when word overlap passes"] = faithfulEmail?.configID == correctEmail.id
+            && faithfulEmail?.text == "person@example.com"
+        var aliasJob = job
+        aliasJob.localRaw = "alpha"
+        var aliasContext = context
+        aliasContext.substitutions = DictationSubstitutions(rules: [.init(from: "alpha", to: "beta"), .init(from: "beta", to: "gamma")])
+        let savedAliasContext = aliasContext
+        let aliasResult = await service.run([rung(.openAI, "echo-input")], job: aliasJob,
+                                            makeContext: { _ in savedAliasContext }, progress: { _ in }, late: { _ in })
+        checks["cloud refinement does not cascade replacement rules"] = aliasResult?.text == "beta"
         let cancellation = rung(.openAI, "cancel")
         let task = Task { await service.run([cancellation], job: job, makeContext: { _ in context }, progress: { _ in }, late: { _ in }) }
         try? await Task.sleep(for: .milliseconds(150))

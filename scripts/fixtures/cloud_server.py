@@ -52,8 +52,13 @@ class Handler(BaseHTTPRequestHandler):
                       {'type': 'content_block_delta', 'delta': {'type': 'text_delta', 'text': ' world.'}},
                       {'type': 'message_delta', 'usage': {'output_tokens': 20}}, {'type': 'message_stop'}]
         else:
-            events = [{'choices': [{'delta': {'content': 'Hello'}}]},
-                      {'choices': [{'delta': {'content': ' world.'}, 'finish_reason': 'stop'}]},
+            first, rest = 'Hello', ' world.'
+            if model == 'echo-input':
+                first, rest = body['messages'][-1]['content'], ''
+            if model == 'wrong-email':
+                first, rest = 'wrong@example.com', ''
+            events = [{'choices': [{'delta': {'content': first}}]},
+                      {'choices': [{'delta': {'content': rest}, 'finish_reason': 'stop'}]},
                       {'choices': [], 'usage': {'prompt_tokens': 100, 'completion_tokens': 20}}, '[DONE]']
         try:
             for event in events:

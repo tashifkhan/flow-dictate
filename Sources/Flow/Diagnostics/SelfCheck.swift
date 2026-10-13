@@ -610,7 +610,10 @@ enum SelfCheck {
         // MARK: Lexicon matching
 
         section("lexicon")
-        let lexicon = Lexicon()
+        let lexiconSuite = "sh.taf.flow.lexicon-check.\(UUID().uuidString)"
+        let lexiconDefaults = UserDefaults(suiteName: lexiconSuite)!
+        defer { lexiconDefaults.removePersistentDomain(forName: lexiconSuite) }
+        let lexicon = Lexicon(defaults: lexiconDefaults)
         do {
             lexicon.addWord("Tashif")
             lexicon.addWord("Cloudflare")
@@ -641,6 +644,35 @@ enum SelfCheck {
             }
             expect(lexicon.words == existingWords, "and removal restores the earlier words")
         }
+
+        section("personal details and replacements")
+        lexicon.personalDetails.name = "Tashif"
+        lexicon.personalDetails.email = "person@example.com"
+        lexicon.personalDetails.phone = "+1 555 0100"
+        lexicon.record(from: "ta shif", to: "Tashif")
+        let substitutions = lexicon.substitutions
+        expect(substitutions.apply("Add my email here.") == "person@example.com", "an email insertion request returns the saved value")
+        expect(substitutions.apply("Please insert my email address here") == "person@example.com", "longer email aliases resolve before shorter ones")
+        expect(substitutions.apply("Send it to my email.") == "Send it to person@example.com.", "personal details expand inside a sentence")
+        expect(substitutions.apply("My phone number") == "+1 555 0100", "phone numbers keep their exact saved formatting")
+        expect(substitutions.apply("my company") == "my company", "missing details stay as spoken")
+        expect(substitutions.apply("My name is Tashiff") == "My name is Tashif", "self-introductions keep their wording and correct the name")
+        expect(substitutions.apply("My email is not working") == "My email is not working", "statements about personal details stay as spoken")
+        expect(substitutions.directInsertion("Please, add my email here.") == "person@example.com", "a direct saved-value request bypasses model generation")
+        expect(!substitutions.preservesValues(in: "wrong@example.com", source: "Send it to my email"), "cleanup cannot substitute a different saved email")
+        expect(substitutions.apply("my emails") == "my emails", "aliases do not match inside longer words")
+        expect(substitutions.apply("ta shif") == "Tashif", "explicit pronunciation aliases run locally")
+        expect(substitutions.apply("Tashiff") == "Tashif", "an unambiguous one-edit name correction runs before source validation")
+        expect(CleanupService.drawsFromSpeech("Tashif", spoken: substitutions.apply("Tashiff")), "the corrected name passes the source check")
+        expect(CleanupService.drawsFromSpeech("person@example.com", spoken: substitutions.apply("add my email here")), "saved details pass the source check")
+        for index in 0..<15 { lexicon.record(from: "alias \(index)", to: "value \(index)") }
+        expect(lexicon.substitutions.apply("ta shif") == "Tashif", "older replacements still work after newer rules are added")
+        expect(Lexicon(defaults: lexiconDefaults).personalDetails == lexicon.personalDetails, "personal details survive a reload")
+        expect(Lexicon(defaults: lexiconDefaults).substitutions.apply("ta shif") == "Tashif", "replacement rules survive a reload")
+        let nonCascading = DictationSubstitutions(rules: [.init(from: "alpha", to: "beta"), .init(from: "beta", to: "gamma")])
+        expect(nonCascading.apply("alpha beta") == "beta gamma", "replacement values do not trigger another rule")
+        let ambiguous = DictationSubstitutions(vocabulary: ["Tashif", "Tashim"])
+        expect(ambiguous.apply("Tashin") == "Tashin", "ambiguous vocabulary corrections stay unchanged")
 
         // MARK: Decisions
 

@@ -3,11 +3,25 @@ import Observation
 
 /// Names, project jargon, and slang the base model mangles.
 ///
-/// Two uses, both cheap: the words go to the recogniser as contextual strings, and
-/// the recent corrections go into the cleanup instructions. This is the "have stuff
-/// prepopulated, like a coding agent" idea from the note, and it is most of the win.
+/// Words bias recognition. Explicit replacements and personal details resolve
+/// locally before cleanup, so they also work without a language model.
 @MainActor @Observable
 final class Lexicon {
+    struct PersonalDetails: Codable, Equatable, Sendable {
+        var name = ""
+        var email = ""
+        var phone = ""
+        var company = ""
+        var address = ""
+    }
+
+    var personalDetails = PersonalDetails() {
+        didSet {
+            if let data = try? JSONEncoder().encode(personalDetails) {
+                defaults.set(data, forKey: "lexiconPersonalDetails")
+            }
+        }
+    }
     /// A time you fixed the model's output by hand or by voice.
     struct Correction: Codable, Hashable, Identifiable, Sendable {
         var id = UUID()
@@ -19,15 +33,16 @@ final class Lexicon {
     private(set) var words: [String] = []
     private(set) var corrections: [Correction] = []
 
-    private let defaults = UserDefaults.standard
+    private let defaults: UserDefaults
     private static let wordsKey = "lexiconWords"
     private static let correctionsKey = "lexiconCorrections"
 
-    /// How many corrections ride along in the instructions. The on-device model has a
-    /// small context and a short prompt beats a complete one.
-    private static let recentLimit = 12
-
-    init() {
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        if let data = defaults.data(forKey: "lexiconPersonalDetails"),
+           let details = try? JSONDecoder().decode(PersonalDetails.self, from: data) {
+            personalDetails = details
+        }
         words = defaults.stringArray(forKey: Self.wordsKey) ?? []
         if let data = defaults.data(forKey: Self.correctionsKey),
            let decoded = try? JSONDecoder().decode([Correction].self, from: data) {
@@ -87,9 +102,23 @@ final class Lexicon {
         persistCorrections()
     }
 
-    /// The newest corrections, as "said → meant" pairs for the prompt.
-    var recent: [Correction] {
-        Array(corrections.suffix(Self.recentLimit).reversed())
+    var substitutions: DictationSubstitutions {
+        var rules = corrections.map { DictationSubstitutions.Rule(from: $0.from, to: $0.to) }
+        let details = personalDetails
+        for (aliases, value) in [
+            (["my name", "my full name"], details.name),
+            (["my email", "my email address"], details.email),
+            (["my phone", "my phone number", "my mobile number"], details.phone),
+            (["my company", "my company name"], details.company),
+            (["my address", "my mailing address"], details.address),
+        ] where !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            rules += aliases.map { .init(from: $0, to: value.trimmingCharacters(in: .whitespacesAndNewlines), personal: true) }
+        }
+        return DictationSubstitutions(rules: rules, vocabulary: recognitionWords)
+    }
+
+    var recognitionWords: [String] {
+        words + (personalDetails.name.isEmpty ? [] : [personalDetails.name])
     }
 
     /// Only the custom words that plausibly show up in this transcript. Sending all of
