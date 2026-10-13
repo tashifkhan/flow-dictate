@@ -19,21 +19,29 @@ function resetEditor(config) {
   editor = config.mode === 'textarea' ? plain : rich;
   inputs = pastes = 0;
   revision = config.revision;
-  saved = config.text;
   if (editor === plain) {
     editor.value = config.text;
     editor.focus();
-    editor.setSelectionRange(7, 10);
+    if (config.caretAtEnd) editor.setSelectionRange(editor.value.length, editor.value.length);
+    else editor.setSelectionRange(7, 10);
   } else {
-    editor.textContent = config.text;
+    // Rich composers keep one block per paragraph, like the chat apps people dictate into.
+    if (config.html) editor.innerHTML = config.html;
+    else editor.textContent = config.text;
     editor.focus();
     const range = document.createRange();
-    range.setStart(editor.firstChild, 7);
-    range.setEnd(editor.firstChild, 10);
+    if (config.caretAtEnd) {
+      range.selectNodeContents(editor);
+      range.collapse(false);
+    } else {
+      range.setStart(editor.firstChild, 7);
+      range.setEnd(editor.firstChild, 10);
+    }
     const selection = getSelection();
     selection.removeAllRanges();
     selection.addRange(range);
   }
+  saved = editor === plain ? editor.value : editor.innerText;
 }
 function editorState() { return { revision, saved, inputs, pastes }; }
 </script></html>

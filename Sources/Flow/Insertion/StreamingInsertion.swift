@@ -73,6 +73,13 @@ final class StreamingInsertion {
     private var awaitingConfirmation = false
     private var pendingEmptyParagraph = false
     private var ownsWholeRichEditor: Bool
+    /// Set once a rich editor's selection offsets turn out to disagree with its AXValue,
+    /// which happens when the draft follows existing paragraphs. From then on the draft
+    /// is addressed by its start and the caret, and `textStart`/`textEnd` place the
+    /// replaced selection inside AXValue.
+    private var draftEnd: Int?
+    private var textStart: Int
+    private var textEnd: Int
 
     init?(field: any StreamingTextField) {
         guard let state = field.read(), state.location >= 0, state.length >= 0,
@@ -80,6 +87,8 @@ final class StreamingInsertion {
         self.field = field
         original = state
         expected = state
+        textStart = state.location
+        textEnd = state.location + state.length
         ownsWholeRichEditor = field.canExposeEmptyParagraph && state.text.isEmpty && state.location == 0 && state.length == 0
     }
 
@@ -118,11 +127,18 @@ final class StreamingInsertion {
         // Preserve the common prefix so each new token normally appends at the caret.
         let prefix = zip(text, next).prefix { $0 == $1 }.map { $0.0 }
         let prefixText = String(prefix)
-        let suffix = String(next.dropFirst(prefix.count))
-        let location = original.location + prefixText.utf16.count
-        let length = didWrite ? text.utf16.count - prefixText.utf16.count : original.length
+        var suffix = String(next.dropFirst(prefix.count))
+        var location = original.location + prefixText.utf16.count
+        var length = didWrite ? text.utf16.count - prefixText.utf16.count : original.length
         let mutable = NSMutableString(string: expected.text)
         if ownsWholeRichEditor { mutable.setString(next) }
+        else if let draftEnd {
+            // Append at the caret, or select the whole draft in the field's own offsets.
+            if prefix.count == text.count { location = draftEnd; length = 0 }
+            else { location = original.location; length = draftEnd - original.location; suffix = next }
+            mutable.setString(original.text)
+            mutable.replaceCharacters(in: NSRange(location: textStart, length: textEnd - textStart), with: next)
+        }
         else { mutable.replaceCharacters(in: NSRange(location: location, length: length), with: suffix) }
         let after = StreamingFieldState(text: mutable as String,
                                        location: original.location + next.utf16.count, length: 0)
@@ -152,7 +168,11 @@ final class StreamingInsertion {
 
     private func confirmsExpectedState() -> Bool {
         guard let actual = field.read() else { return false }
-        if actual == expected { pendingEmptyParagraph = false; return true }
+        if actual == expected {
+            pendingEmptyParagraph = false
+            if draftEnd != nil { draftEnd = actual.location }
+            return true
+        }
         if ownsWholeRichEditor, actual.length == 0 {
             // Rich editors count paragraph separators differently in AXValue and
             // AXSelectedTextRange. We own the whole initially empty editor and
@@ -170,15 +190,49 @@ final class StreamingInsertion {
         // A rich editor's placeholder paragraph can disappear on the first
         // paste and reappear after a full rewrite. Allow only one trailing LF
         // to change, only in an originally empty field, with the exact caret.
-        guard pendingEmptyParagraph,
-              actual.location == expected.location, actual.length == expected.length else { return false }
-        let removed = expected.text.hasSuffix("\n") && actual.text == String(expected.text.dropLast())
-        let added = actual.text == expected.text + "\n"
-        guard removed || added else { return false }
-        if removed { ownsWholeRichEditor = true }
-        expected = actual
-        pendingEmptyParagraph = false
-        return true
+        if pendingEmptyParagraph, actual.location == expected.location, actual.length == expected.length {
+            let removed = expected.text.hasSuffix("\n") && actual.text == String(expected.text.dropLast())
+            let added = actual.text == expected.text + "\n"
+            if removed || added {
+                if removed { ownsWholeRichEditor = true }
+                expected = actual
+                pendingEmptyParagraph = false
+                return true
+            }
+        }
+        return locatesDraft(in: actual)
+    }
+
+    /// Rich editors with existing paragraphs can leave separators out of
+    /// AXSelectedTextRange while AXValue keeps them, so the caret's offset is not the
+    /// draft's offset in the text. Accept the edit only when AXValue is exactly the
+    /// original text with the draft in place of the selection, a few separators away
+    /// from where the range said, and the caret sits inside or after the draft.
+    private func locatesDraft(in actual: StreamingFieldState) -> Bool {
+        guard field.canExposeEmptyParagraph, !ownsWholeRichEditor, actual.length == 0,
+              actual.location >= original.location, actual.location <= original.location + text.utf16.count else { return false }
+        let before = original.text as NSString
+        let after = actual.text as NSString
+        let draft = text as NSString
+        let removed = before.length + draft.length - after.length
+        guard removed >= 0 else { return false }
+        // Only paragraph separators and attachments move offsets, so they bound the search.
+        let slack = original.text.utf16.reduce(0) { $0 + ($1 == 0x0A || $1 == 0xFFFC ? 1 : 0) }
+        let lower = max(0, original.location - slack)
+        let upper = min(original.location + slack, before.length - removed)
+        guard lower <= upper else { return false }
+        for start in lower...upper {
+            guard after.substring(to: start) == before.substring(to: start),
+                  after.substring(with: NSRange(location: start, length: draft.length)) == text,
+                  after.substring(from: start + draft.length) == before.substring(from: start + removed) else { continue }
+            textStart = start
+            textEnd = start + removed
+            draftEnd = actual.location
+            expected = actual
+            pendingEmptyParagraph = false
+            return true
+        }
+        return false
     }
 
     /// Restore the user's original selection only while our draft still owns it.
@@ -201,7 +255,8 @@ final class StreamingInsertion {
         let selected = (original.text as NSString).substring(with: NSRange(location: original.location, length: original.length))
         let replaced = ownsWholeRichEditor
             ? field.replaceEntireDraft(with: selected) ?? field.replace(location: 0, length: expected.text.utf16.count, with: selected)
-            : field.replace(location: original.location, length: text.utf16.count, with: selected)
+            : field.replace(location: original.location, length: (draftEnd ?? original.location + text.utf16.count) - original.location,
+                            with: selected)
         guard replaced else {
             detached = true
             return false
@@ -209,11 +264,14 @@ final class StreamingInsertion {
         defer { field.finishEdit() }
         let restored = StreamingFieldState(text: original.text,
                                             location: original.location + original.length, length: 0)
+        let offsetsDisagree = draftEnd != nil
         expected = restored
         text = ""
         didWrite = false
+        draftEnd = nil
         for attempt in 0..<51 {
-            if field.read() == restored { return true }
+            if let actual = field.read(), actual == restored
+                || (offsetsDisagree && actual.text == original.text && actual.length == 0) { return true }
             if attempt < 50 { try? await Task.sleep(for: .milliseconds(20)) }
         }
         detached = true

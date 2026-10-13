@@ -201,7 +201,11 @@ fields use Accessibility edits; readable browser and Electron fields use real
 paste events so the editor receives each complete chunk. Flow restores the clipboard
 after the field confirms the edit. Flow checks the field and caret before
 each update. If you move focus or edit the text, it stops updating the field and
-shows the remaining response in the pill. Escape restores the original selection
+shows the remaining response in the pill. A field that has not confirmed an edit
+within 250 ms gets the pill too, and the pill stays up for at least 0.9 s before it
+collapses. Rich editors that already hold paragraphs can skip the separators in their
+selection offsets; Flow finds the draft in the field's text and keeps streaming
+after the existing paragraphs. Escape restores the original selection
 when the draft is still unchanged and focused. The final result reconciles the draft
 with cleanup, replacement rules, and list numbering.
 
@@ -210,8 +214,8 @@ response and Flow uses its existing paste path once generation finishes. With no
 editable field, it copies the finished response and collapses to the clipboard icon.
 The progress circle stays in place throughout generation. Fallback text appears
 in a fixed preview above it, with no per-token scrolling or window resizing.
-Successful insertion ends with only a tick; clipboard delivery ends with a copy
-button that can copy the result again. Both use the circle regardless of panel size.
+Both endings draw a tick. Successful insertion stops there; clipboard delivery then
+turns the tick into a copy button that can copy the result again. Both use the circle regardless of panel size.
 Streaming is automatic per provider, endpoint, and model. If a server rejects
 streaming or returns ordinary JSON, Flow remembers that during the session and
 uses complete responses for that route. Settings > Cloud > provider > Streaming
