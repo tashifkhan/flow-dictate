@@ -29,10 +29,29 @@ struct NoteEditor: View {
         .navigationTitle(note?.displayTitle ?? "Note")
         .navigationSubtitle(createdAt.formatted(date: .abbreviated, time: .shortened))
         .toolbar { toolbar }
-        .onAppear { env.controller.target = .note(noteID) }
+        .onAppear {
+            env.controller.target = .note(noteID)
+            env.controller.noteStreamingField = ClosureStreamingTextField(read: {
+                guard env.controller.target == .note(noteID),
+                      NSWorkspace.shared.frontmostApplication?.processIdentifier == ProcessInfo.processInfo.processIdentifier else { return nil }
+                return StreamingFieldState(text: text, location: text.utf16.count, length: 0)
+            }, replace: { location, length, replacement in
+                guard env.controller.target == .note(noteID),
+                      NSWorkspace.shared.frontmostApplication?.processIdentifier == ProcessInfo.processInfo.processIdentifier,
+                      location >= 0, length >= 0,
+                      location + length <= text.utf16.count else { return false }
+                let value = NSMutableString(string: text)
+                value.replaceCharacters(in: NSRange(location: location, length: length), with: replacement)
+                text = value as String
+                return true
+            })
+            env.controller.onNoteStreamCommit = { save() }
+        }
         .onDisappear {
             save()
             env.controller.target = .cursor
+            env.controller.noteStreamingField = nil
+            env.controller.onNoteStreamCommit = nil
         }
         // Dictated text arrives through the store, so pull it back into the editor.
         .onChange(of: note?.text) { _, new in

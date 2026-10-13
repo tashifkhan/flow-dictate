@@ -66,6 +66,8 @@ actor CloudService {
 
     /// Called with "Refining with Anthropic · Sonnet" as work starts.
     typealias Progress = @Sendable (String) -> Void
+    /// Cumulative text snapshots from the selected config's writing stage.
+    typealias Preview = @Sendable (String) async -> Void
     /// Parallel results that finish after the pasted one, for the menu bar.
     typealias Late = @Sendable (CloudResult) -> Void
     /// Builds the cleanup prompt's context for a transcript, on the main actor.
@@ -88,7 +90,7 @@ actor CloudService {
     /// never waits on configs below the winner; those report through `late`.
     func run(
         _ all: [CloudRung], job: Job, makeContext: @escaping MakeContext,
-        progress: @escaping Progress, late: @escaping Late
+        progress: @escaping Progress, late: @escaping Late, preview: @escaping Preview = { _ in }
     ) async -> RungOutcome? {
         // Offline, only servers on this Mac can answer. Skip the rest without waiting.
         let rungs = NetworkStatus.shared.isOnline ? all : all.filter { $0.routes.allSatisfy(\.provider.isLocalhost) }
@@ -98,11 +100,12 @@ actor CloudService {
         if !job.parallel || rungs.count == 1 {
             for (index, rung) in rungs.enumerated() {
                 do {
-                    return try await attempt(rung, number: index + 1, job: job, makeContext: makeContext, progress: progress)
+                    return try await attempt(rung, number: index + 1, job: job, makeContext: makeContext, progress: progress, preview: preview)
                 } catch {
                     // Cancelled requests fail fast; without this, Escape would walk the
                     // whole ladder and hand back to this Mac.
                     if Task.isCancelled { return nil }
+                    await preview("")
                     log.error("config \(index + 1) (\(rung.label, privacy: .public)) failed: \(error.localizedDescription, privacy: .public)")
                     if Self.isOffline(error) { break }
                 }
@@ -110,11 +113,13 @@ actor CloudService {
             return nil
         }
 
+        let selection = CloudPreviewSelection(preview: preview)
         let quiet: Progress = { _ in }
         let tasks = rungs.enumerated().map { index, rung in
             Task<RungOutcome?, Never> {
                 do {
-                    return try await self.attempt(rung, number: index + 1, job: job, makeContext: makeContext, progress: quiet)
+                    return try await self.attempt(rung, number: index + 1, job: job, makeContext: makeContext, progress: quiet,
+                                                  preview: { text in await selection.update(index: index, text: text) })
                 } catch {
                     self.log.error("config \(index + 1) (\(rung.label, privacy: .public)) failed: \(error.localizedDescription, privacy: .public)")
                     return nil
@@ -125,6 +130,7 @@ actor CloudService {
         // on its own.
         return await withTaskCancellationHandler {
             for (index, task) in tasks.enumerated() {
+                await selection.activate(index: index)
                 progress("Waiting for config \(index + 1): \(rungs[index].label)")
                 guard let outcome = await task.value else { continue }
                 guard !Task.isCancelled else { return nil }
@@ -145,7 +151,7 @@ actor CloudService {
     }
 
     private func attempt(
-        _ rung: CloudRung, number: Int, job: Job, makeContext: MakeContext, progress: Progress
+        _ rung: CloudRung, number: Int, job: Job, makeContext: MakeContext, progress: Progress, preview: @escaping Preview
     ) async throws -> RungOutcome {
         let label = "\(number). \(rung.label)"
         let scope = Scope(dictationID: job.dictationID, configID: rung.id, label: label, stage: .onePass)
@@ -159,7 +165,9 @@ actor CloudService {
             // The audio writer preserves alias phrases. Resolve explicit user rules
             // once here, after transcription, just as the two-pass route does.
             context.corrections = []
-            let text = try await onePass(job.audio, route: route, context: context, scope: scope)
+            let substitutions = context.substitutions
+            let text = try await onePass(job.audio, route: route, context: context, scope: scope,
+                                         preview: { text in await preview(substitutions.apply(text)) })
             let resolved = context.substitutions.apply(text)
             guard job.localRaw.isEmpty || (Self.faithful(resolved, to: context.substitutions.apply(job.localRaw), language: job.language)
                 && context.substitutions.preservesValues(in: resolved, source: job.localRaw)) else {
@@ -182,7 +190,7 @@ actor CloudService {
             progress("Refining with \(refiner.label)")
             let context = await makeContext(raw)
             let resolvedRaw = context.substitutions.apply(raw)
-            let text = context.substitutions.normalizeVocabulary(in: try await refine(resolvedRaw, route: refiner, context: context, scope: scope.stage(.refinement)))
+            let text = context.substitutions.normalizeVocabulary(in: try await refine(resolvedRaw, route: refiner, context: context, scope: scope.stage(.refinement), preview: preview))
             guard Self.faithful(text, to: resolvedRaw, language: job.language),
                   context.substitutions.preservesValues(in: text, source: raw) else { throw CloudError.strayed }
             return RungOutcome(label: label, raw: raw, text: text, usesCloud: true, configID: rung.id)
@@ -256,21 +264,21 @@ actor CloudService {
         }
     }
 
-    private func onePass(_ audio: Data, route: CloudRoute, context: CleanupContext, scope: Scope) async throws -> String {
+    private func onePass(_ audio: Data, route: CloudRoute, context: CleanupContext, scope: Scope, preview: @escaping Preview) async throws -> String {
         let account = route.provider
         let instruction = "Listen to this recording and return the finished written dictation. Do the transcription and cleanup in this one response. "
             + refinementInstruction(context)
         switch account.api {
         case .openAI:
             let payload = Self.audioChatPayload(audio: audio, modelID: route.model.modelID, instruction: instruction)
-            return try chatText(try await sendJSON(account, route.model, path: "chat/completions", payload: payload, scope: scope))
+            return try chatText(try await sendJSON(account, route.model, path: "chat/completions", payload: payload, scope: scope, preview: preview))
         case .google:
             guard ((audio.count + 2) / 3) * 4 < 19_000_000 else { throw CloudError.audioTooLarge }
             let payload: [String: Any] = ["contents": [["parts": [
                 ["text": instruction],
                 ["inlineData": ["mimeType": "audio/wav", "data": audio.base64EncodedString()]],
             ]]]]
-            return try geminiText(try await sendJSON(account, route.model, path: generatePath(route), payload: payload, scope: scope))
+            return try geminiText(try await sendJSON(account, route.model, path: generatePath(route), payload: payload, scope: scope, preview: preview))
         case .anthropic:
             throw CloudError.unsupportedAudio
         }
@@ -283,7 +291,7 @@ actor CloudService {
         ]]]]
     }
 
-    private func refine(_ text: String, route: CloudRoute, context: CleanupContext, scope: Scope) async throws -> String {
+    private func refine(_ text: String, route: CloudRoute, context: CleanupContext, scope: Scope, preview: @escaping Preview) async throws -> String {
         let account = route.provider
         let instruction = refinementInstruction(context)
         switch account.api {
@@ -291,14 +299,14 @@ actor CloudService {
             let payload: [String: Any] = ["model": route.model.modelID, "messages": [
                 ["role": "system", "content": instruction], ["role": "user", "content": text],
             ]]
-            return try chatText(try await sendJSON(account, route.model, path: "chat/completions", payload: payload, scope: scope))
+            return try chatText(try await sendJSON(account, route.model, path: "chat/completions", payload: payload, scope: scope, preview: preview))
         case .google:
             let payload: [String: Any] = ["contents": [["parts": [["text": instruction + "\n\n" + text]]]]]
-            return try geminiText(try await sendJSON(account, route.model, path: generatePath(route), payload: payload, scope: scope))
+            return try geminiText(try await sendJSON(account, route.model, path: generatePath(route), payload: payload, scope: scope, preview: preview))
         case .anthropic:
             let payload: [String: Any] = ["model": route.model.modelID, "max_tokens": 4096,
                                           "system": instruction, "messages": [["role": "user", "content": text]]]
-            let json = try await sendJSON(account, route.model, path: "messages", payload: payload, scope: scope)
+            let json = try await sendJSON(account, route.model, path: "messages", payload: payload, scope: scope, preview: preview)
             let blocks = json["content"] as? [[String: Any]]
             return try nonempty(blocks?.filter { $0["type"] as? String == "text" }
                 .compactMap { $0["text"] as? String }.joined())
@@ -352,7 +360,7 @@ actor CloudService {
     /// Every retry is a separate measured request. Streaming falls back to JSON
     /// for compatible servers that reject streaming parameters.
     private func sendJSON(
-        _ account: CloudProvider, _ model: CloudModel, path: String, payload: [String: Any], scope: Scope
+        _ account: CloudProvider, _ model: CloudModel, path: String, payload: [String: Any], scope: Scope, preview: @escaping Preview = { _ in }
     ) async throws -> [String: Any] {
         var streaming = true
         var reasoning = model.reasoning != .automatic
@@ -378,9 +386,10 @@ actor CloudService {
                 request.httpBody = try JSONSerialization.data(withJSONObject: tuned)
                 request.setValue("application/json", forHTTPHeaderField: "Content-Type")
                 if streaming { request.setValue("text/event-stream", forHTTPHeaderField: "Accept") }
-                return try await perform(request, provider: account, modelID: model.modelID, scope: scope)
+                return try await perform(request, provider: account, modelID: model.modelID, scope: scope, preview: preview)
             } catch CloudError.http(let status) where [400, 404, 422].contains(status) {
                 if streaming {
+                    await preview("")
                     streaming = false
                     log.notice("\(account.name, privacy: .public) rejected streaming; retrying as JSON")
                 } else if reasoning && status != 404 {
@@ -437,7 +446,7 @@ actor CloudService {
     }
 
     private func perform(_ request: URLRequest, provider: CloudProvider,
-                         modelID: String, scope: Scope) async throws -> [String: Any] {
+                         modelID: String, scope: Scope, preview: @escaping Preview = { _ in }) async throws -> [String: Any] {
         var record = CloudRequestRecord(dictationID: scope.dictationID, configID: scope.configID,
                                         configLabel: scope.label, providerID: provider.id,
                                         providerName: provider.name, modelID: modelID, stage: scope.stage)
@@ -474,14 +483,23 @@ actor CloudService {
             let json: [String: Any]
             if http.value(forHTTPHeaderField: "Content-Type")?.lowercased().contains("text/event-stream") == true {
                 var count = 0
+                var visibleCount = 0
+                var lastPreview = start
                 for try await byte in bytes {
                     try Task.checkCancellation()
                     count += 1
                     if count > 16_000_000 { throw CloudError.invalidResponse }
                     try stream.byte(byte, elapsed: (ContinuousClock.now - start).timeInterval)
+                    if stream.text.utf8.count != visibleCount,
+                       visibleCount == 0 || ContinuousClock.now - lastPreview >= .milliseconds(50) {
+                        visibleCount = stream.text.utf8.count
+                        lastPreview = .now
+                        await preview(stream.text)
+                    }
                 }
                 try stream.finish(elapsed: (ContinuousClock.now - start).timeInterval)
                 json = try stream.responseJSON()
+                await preview(stream.text)
             } else {
                 var data = Data()
                 for try await byte in bytes {
@@ -566,5 +584,22 @@ actor CloudService {
             case .strayed: "The answer strayed from what was said."
             }
         }
+    }
+}
+
+/// Parallel configs may finish in any order. Only the currently preferred config
+/// can publish a draft; later configs keep their latest snapshot until selected.
+private actor CloudPreviewSelection {
+    let preview: CloudService.Preview
+    private var active = 0
+    private var snapshots: [Int: String] = [:]
+    init(preview: @escaping CloudService.Preview) { self.preview = preview }
+    func activate(index: Int) async {
+        active = index
+        await preview(snapshots[index] ?? "")
+    }
+    func update(index: Int, text: String) async {
+        snapshots[index] = text
+        if index == active { await preview(text) }
     }
 }

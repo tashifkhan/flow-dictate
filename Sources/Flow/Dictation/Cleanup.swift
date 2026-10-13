@@ -146,7 +146,8 @@ actor CleanupService {
     // MARK: - Cleanup
 
     /// Cleans a raw transcript, or classifies it as a command. Never throws.
-    func clean(_ raw: String, context: CleanupContext) async -> Decision {
+    func clean(_ raw: String, context: CleanupContext,
+               preview: @escaping @Sendable (String) async -> Void = { _ in }) async -> Decision {
         let spokenCommand = Self.soundsLikeCommand(raw)
         if !spokenCommand, let value = context.substitutions.directInsertion(raw) { return .raw(value) }
         let trimmed = (spokenCommand ? raw : context.substitutions.apply(raw))
@@ -168,13 +169,23 @@ actor CleanupService {
         }
 
         do {
-            let response = try await session.respond(
+            let stream = session.streamResponse(
                 to: trimmed,
                 schema: schema,
                 options: GenerationOptions(samplingMode: .greedy)
             )
+            var content: GeneratedContent?
+            for try await snapshot in stream {
+                try Task.checkCancellation()
+                content = snapshot.content
+                if !context.spokenCommand,
+                   let text = try? snapshot.content.value(String.self, forProperty: "text") {
+                    await preview(DictationCleanupPolicy.withoutEmDashes(text))
+                }
+            }
+            guard let content else { return .raw(fallback) }
             var decision = try parse(
-                response.content, fallback: fallback, spoken: trimmed,
+                content, fallback: fallback, spoken: trimmed,
                 checkSource: context.transcriptionLanguage != .hinglish, allowCommands: spokenCommand
             )
             decision.text = context.substitutions.normalizeVocabulary(in: decision.text)

@@ -193,9 +193,11 @@ final class AppEnvironment {
     private func observePhase() {
         withObservationTracking {
             _ = controller.phase
+            _ = controller.showsStreamingPreview
         } onChange: {
             Task { @MainActor in
                 if self.controller.phase == .idle { self.presenter.hide() }
+                else { self.presenter.refreshLayout() }
                 self.observePhase()
             }
         }

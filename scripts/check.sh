@@ -20,3 +20,4 @@ fi
 
 "$SCRIPT_DIR/build.sh" debug
 "$APP_BUNDLE/Contents/MacOS/Flow" --self-check
+"$APP_BUNDLE/Contents/MacOS/Flow" --check-streaming

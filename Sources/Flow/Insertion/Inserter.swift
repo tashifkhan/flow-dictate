@@ -142,6 +142,11 @@ final class Inserter {
 
     func forgetLastInsert() { lastInsert = nil }
 
+    func finishStreaming(_ text: String) -> Result {
+        lastInsert = text
+        return Result(text: text, destination: .textField)
+    }
+
     // MARK: - Confirmation
 
     /// Where the caret was before an insert. Only positions, never the field's text.
@@ -345,7 +350,9 @@ final class Inserter {
         down?.setIntegerValueField(.eventSourceUserData, value: Self.eventMarker)
         up?.setIntegerValueField(.eventSourceUserData, value: Self.eventMarker)
         down?.flags = flags
-        up?.flags = flags
+        // The chord belongs to key-down. Leaving Command on key-up makes the HID
+        // state look held after a synthetic paste and blocks subsequent streaming.
+        up?.flags = []
         down?.post(tap: .cghidEventTap)
         usleep(Self.keyEventGap)
         up?.post(tap: .cghidEventTap)
