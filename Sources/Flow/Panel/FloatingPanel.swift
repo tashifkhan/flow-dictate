@@ -9,7 +9,7 @@ final class FloatingPanel: NSPanel {
     init(contentRect: NSRect) {
         super.init(
             contentRect: contentRect,
-            styleMask: [.nonactivatingPanel, .titled, .fullSizeContentView],
+            styleMask: [.nonactivatingPanel, .borderless],
             backing: .buffered,
             defer: false
         )
@@ -18,7 +18,7 @@ final class FloatingPanel: NSPanel {
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
         titleVisibility = .hidden
         titlebarAppearsTransparent = true
-        isMovableByWindowBackground = true
+        isMovableByWindowBackground = false
         hidesOnDeactivate = false
         isOpaque = false
         backgroundColor = .clear
@@ -29,7 +29,7 @@ final class FloatingPanel: NSPanel {
         animationBehavior = .utilityWindow
     }
 
-    /// Without this a borderless panel refuses key events, and Escape stops working.
+    /// Keyboard focus always belongs to the target app. Escape uses the global monitor.
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
 }
@@ -41,12 +41,8 @@ final class PanelPresenter {
     private let controller: DictationController
     private let presentation = PanelPresentation()
 
-    /// Follows the setting, so switching size takes effect on the next show().
-    private var size: CGSize {
-        if controller.showsStreamingPreview { return PanelView.streamingFrame }
-        if case .copied = controller.phase { return PanelSize.compact.frame }
-        return Settings.shared.panelSize.frame
-    }
+    // The transparent envelope stays fixed. Only its visible contents morph.
+    private var size: CGSize { PanelView.presentationFrame }
 
     init(controller: DictationController) {
         self.controller = controller
@@ -56,10 +52,9 @@ final class PanelPresenter {
         presentation.id = UUID()
         let panel = panel ?? make()
         self.panel = panel
-        // The hosting view self-sizes, but the window does not shrink on its own after
-        // the setting changes, so pin the size before positioning reads the frame.
+        // Pin the transparent frame once, before positioning the circle.
         if panel.frame.size != size {
-            panel.setContentSize(size)
+            panel.setFrame(NSRect(origin: panel.frame.origin, size: size), display: false)
         }
         position(panel)
         // orderFrontRegardless, not makeKeyAndOrderFront: the whole point is not to
@@ -76,17 +71,7 @@ final class PanelPresenter {
     }
 
     var isVisible: Bool { panel?.isVisible == true }
-
-    func refreshLayout() {
-        guard let panel, panel.isVisible, panel.frame.size != size else { return }
-        let old = panel.frame
-        var frame = NSRect(x: old.midX - size.width / 2, y: old.minY, width: size.width, height: size.height)
-        if let visible = (panel.screen ?? NSScreen.main)?.visibleFrame {
-            frame.origin.x = min(max(frame.minX, visible.minX + 12), visible.maxX - frame.width - 12)
-            frame.origin.y = min(max(frame.minY, visible.minY + 12), visible.maxY - frame.height - 12)
-        }
-        panel.setFrame(frame, display: true, animate: !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
-    }
+    var diagnosticWindow: NSWindow? { CommandLine.arguments.contains("--check-panel") ? panel : nil }
 
     private func make() -> FloatingPanel {
         let panel = FloatingPanel(contentRect: NSRect(origin: .zero, size: size))
@@ -95,7 +80,7 @@ final class PanelPresenter {
             self?.hide()
         }
         let hosting = NSHostingView(rootView: root)
-        hosting.sizingOptions = [.preferredContentSize]
+        hosting.sizingOptions = []
         panel.contentView = hosting
         return panel
     }
@@ -109,7 +94,8 @@ final class PanelPresenter {
             let screen = NSScreen.screens.first { $0.frame.contains(mouse) } ?? NSScreen.main
             guard let visible = screen?.visibleFrame else { return }
             // Below the cursor, nudged so it never runs off an edge.
-            var origin = CGPoint(x: mouse.x - size.width / 2, y: mouse.y - size.height - 24)
+            // Anchor the circle, not the taller transparent preview envelope.
+            var origin = CGPoint(x: mouse.x - size.width / 2, y: mouse.y - PanelSize.compact.frame.height - 24)
             origin.x = min(max(origin.x, visible.minX + 12), visible.maxX - size.width - 12)
             origin.y = min(max(origin.y, visible.minY + 12), visible.maxY - size.height - 12)
             panel.setFrameOrigin(origin)

@@ -193,11 +193,9 @@ final class AppEnvironment {
     private func observePhase() {
         withObservationTracking {
             _ = controller.phase
-            _ = controller.showsStreamingPreview
         } onChange: {
             Task { @MainActor in
                 if self.controller.phase == .idle { self.presenter.hide() }
-                else { self.presenter.refreshLayout() }
                 self.observePhase()
             }
         }
@@ -207,7 +205,9 @@ final class AppEnvironment {
         Task {
             // Give the panel long enough to show the result before it collapses.
             while controller.phase.isBusy { try? await Task.sleep(for: .milliseconds(80)) }
-            try? await Task.sleep(for: .milliseconds(800))
+            let copied: Bool
+            if case .copied = controller.phase { copied = true } else { copied = false }
+            try? await Task.sleep(for: copied ? .seconds(2) : .milliseconds(800))
             // "Check insertion" and a test result stay up; they hide when the phase idles.
             switch controller.phase {
             case .unconfirmed, .tested: return

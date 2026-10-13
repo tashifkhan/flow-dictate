@@ -21,7 +21,7 @@ struct PanelView: View {
     /// Errors need words, so they get a wider pill than the capsule.
     static let failureWidth: CGFloat = 236
     static let morphDuration = 0.18
-    static let streamingFrame = CGSize(width: 380, height: 244)
+    static let presentationFrame = CGSize(width: 380, height: 244)
 
     @Bindable var controller: DictationController
     var presentation: PanelPresentation
@@ -32,8 +32,10 @@ struct PanelView: View {
     @State private var expanded = false
 
     private var isCompact: Bool {
-        if case .copied = controller.phase { return true }
-        return Settings.shared.panelSize == .compact
+        switch controller.phase {
+        case .processing, .inserted, .copied, .listUpdated: return true
+        default: return Settings.shared.panelSize == .compact
+        }
     }
 
     private var isCapturing: Bool {
@@ -44,47 +46,20 @@ struct PanelView: View {
     }
 
     var body: some View {
-        Group {
-            if controller.showsStreamingPreview { streamingPreview }
-            else if isCompact { hud } else { standard }
+        ZStack(alignment: .bottom) {
+            if !isCompact { standard }
+            // Keep the HUD mounted, including its spinner and entrance state.
+            hud
+                .opacity(isCompact ? 1 : 0)
+                .allowsHitTesting(isCompact)
+                .accessibilityHidden(!isCompact)
+        }
+        .frame(width: Self.presentationFrame.width, height: Self.presentationFrame.height, alignment: .bottom)
+        .task(id: presentation.id) { await enter() }
+        .onChange(of: isCapturing) { _, capturing in
+            withAnimation(morphAnimation) { expanded = capturing }
         }
         .onExitCommand(perform: onCancel)
-    }
-
-    private var streamingPreview: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 9) {
-                ProgressView().controlSize(.small)
-                Text(controller.processingDetail ?? "Writing")
-                    .font(.caption).foregroundStyle(HUDPalette.muted)
-                    .lineLimit(1)
-                Spacer()
-                Button(action: onCancel) {
-                    Image(systemName: "xmark").font(.system(size: 11, weight: .semibold))
-                        .frame(width: 24, height: 24)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Cancel dictation")
-            }
-            ScrollViewReader { proxy in
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 0) {
-                        Text(controller.streamedText.isEmpty ? "Waiting for text…" : controller.streamedText)
-                            .font(.callout)
-                            .foregroundStyle(controller.streamedText.isEmpty ? HUDPalette.muted : HUDPalette.ink)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .fixedSize(horizontal: false, vertical: true)
-                        Color.clear.frame(height: 1).id("streamEnd")
-                    }
-                }
-                .onChange(of: controller.streamedText) { _, _ in proxy.scrollTo("streamEnd", anchor: .bottom) }
-            }
-        }
-        .padding(18)
-        .frame(width: Self.streamingFrame.width - 36, height: Self.streamingFrame.height - 36)
-        .hudSurface(cornerRadius: 22)
-        .frame(width: Self.streamingFrame.width, height: Self.streamingFrame.height, alignment: .bottom)
-        .animation(reduceMotion ? nil : .easeInOut(duration: Self.morphDuration), value: controller.showsStreamingPreview)
     }
 
     // MARK: - Compact HUD
@@ -99,19 +74,23 @@ struct PanelView: View {
                 }
             }
             .frame(minHeight: Self.hudHeight)
+            .overlay(alignment: .bottom) {
+                if controller.showsStreamingPreview {
+                    StreamingPreview(text: controller.streamedText)
+                        .padding(.bottom, Self.hudHeight + 10)
+                        .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.96, anchor: .bottom)))
+                }
+            }
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: controller.showsStreamingPreview)
             limitNote
                 .frame(height: Self.noticeHeight)
         }
-        .scaleEffect(entered ? 1 : 0.25, anchor: .top)
+        .scaleEffect(entered ? 1 : 0.25, anchor: .bottom)
         .opacity(entered ? 1 : 0)
         .padding(.top, Self.hudInset)
         // The window stays one size and the capsule morphs inside it, so the panel never
         // drifts sideways while its width animates.
         .frame(width: PanelSize.compact.frame.width, height: PanelSize.compact.frame.height, alignment: .top)
-        .task(id: presentation.id) { await enter() }
-        .onChange(of: isCapturing) { _, capturing in
-            withAnimation(morphAnimation) { expanded = capturing }
-        }
     }
 
     private var morphAnimation: Animation? {
@@ -145,7 +124,10 @@ struct PanelView: View {
                 .opacity(expanded ? 1 : 0)
                 .allowsHitTesting(expanded)
                 .accessibilityHidden(!expanded)
-            Button(action: onCancel) {
+            Button {
+                if case .copied = controller.phase { controller.copyCompletedResult() }
+                else { onCancel() }
+            } label: {
                 compactIcon
                     .frame(width: Self.hudHeight, height: Self.hudHeight)
                     .contentShape(Circle())
@@ -154,8 +136,9 @@ struct PanelView: View {
             .opacity(expanded ? 0 : 1)
             .allowsHitTesting(!expanded)
             .accessibilityHidden(expanded)
-            .accessibilityLabel(controller.phase.isBusy ? "Cancel dictation" : statusLabel)
-            .accessibilityHint(controller.phase.isBusy ? "Cancel this dictation" : "Dismiss status")
+            .accessibilityLabel(circleActionLabel)
+            .accessibilityHint(controller.phase.isBusy ? "Cancel this dictation" : circleActionLabel)
+            .help(circleActionLabel)
         }
         .frame(width: expanded ? Self.hudWidth : Self.hudHeight, height: Self.hudHeight)
         .clipped()
@@ -253,6 +236,11 @@ struct PanelView: View {
             return "Downloading \(Int(fraction * 100))%"
         }
         return "Starting"
+    }
+
+    private var circleActionLabel: String {
+        if case .copied = controller.phase { return "Copy again" }
+        return controller.phase.isBusy ? "Cancel dictation" : "Dismiss status"
     }
 
     private var resultSymbol: String {
@@ -444,6 +432,49 @@ private struct ElapsedTime: View {
                 .frame(minWidth: 34, alignment: .trailing)
                 .accessibilityLabel("Recording time")
                 .accessibilityValue(hudDuration(seconds))
+        }
+    }
+}
+
+/// A bounded caption, updated at ten frames per second without scroll animations.
+private struct StreamingPreview: View {
+    var text: String
+    @State private var displayedText = ""
+    @State private var pendingText = ""
+
+    var body: some View {
+        GeometryReader { geometry in
+            Text(displayedText)
+                .font(.callout)
+                .foregroundStyle(HUDPalette.ink)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(width: geometry.size.width, alignment: .leading)
+                .frame(height: geometry.size.height, alignment: .bottomLeading)
+                .transaction { $0.animation = nil }
+                .accessibilityAddTraits(.updatesFrequently)
+        }
+        .frame(width: 292, height: 78)
+        .clipped()
+        .mask(alignment: .top) {
+            VStack(spacing: 0) {
+                LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
+                    .frame(height: 8)
+                Color.black
+            }
+        }
+        .padding(14)
+        .hudSurface(cornerRadius: 20)
+        .onChange(of: text) { _, next in
+            if !next.isEmpty { pendingText = String(next.suffix(600)) }
+        }
+        .task {
+            pendingText = String(text.suffix(600))
+            displayedText = pendingText
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
+                // Keep the last preview during provider retries rather than flashing blank.
+                if !pendingText.isEmpty { displayedText = pendingText }
+            }
         }
     }
 }
