@@ -11,12 +11,19 @@ private final class CheckStreamingField: StreamingTextField {
     var syntheticParagraph = false
     var paragraphAfterRewrite = false
     var paragraphOffsets = false
+    /// Paragraph separators before the caret that the selection range leaves out, as
+    /// Chromium does once a rich editor already holds paragraphs.
+    var uncountedSeparators = 0
     init(_ text: String, location: Int? = nil, length: Int = 0) {
         state = .init(text: text, location: location ?? text.utf16.count, length: length)
     }
-    func read() -> StreamingFieldState? { focused ? state : nil }
+    func read() -> StreamingFieldState? {
+        guard focused else { return nil }
+        return .init(text: state.text, location: state.location - uncountedSeparators, length: state.length)
+    }
     func replace(location: Int, length: Int, with text: String) -> Bool {
         guard !refusesEdits else { return false }
+        let location = location + uncountedSeparators
         let value = NSMutableString(string: state.text)
         value.replaceCharacters(in: NSRange(location: location, length: length), with: text)
         var next = StreamingFieldState(text: value as String, location: location + text.utf16.count, length: 0)
@@ -76,6 +83,20 @@ enum StreamingCheck {
         let newlineFinal = await newlineStream.update("First and the complete answer")
         check(newlineFirst && newlineFinal && realNewline.state.text == "First and the complete answer\n",
               "a real surrounding newline survives rich field streaming")
+
+        let drafted = CheckStreamingField("First paragraph.\nSecond paragraph.")
+        drafted.canExposeEmptyParagraph = true
+        drafted.uncountedSeparators = 1
+        let draftedStream = StreamingInsertion(field: drafted)!
+        let draftedFirst = await draftedStream.update("Hello")
+        let draftedNext = await draftedStream.update("Hello world and the rest")
+        let draftedFinal = await draftedStream.update("Hi world and the rest!")
+        check(draftedFirst && draftedNext && draftedFinal
+              && drafted.state.text == "First paragraph.\nSecond paragraph.Hi world and the rest!",
+              "a rich editor that already holds paragraphs keeps streaming after its last one")
+        let draftedRestored = await draftedStream.rollback()
+        check(draftedRestored && drafted.state.text == "First paragraph.\nSecond paragraph.",
+              "cancelling after existing paragraphs restores the draft")
 
         let rich = CheckStreamingField("")
         rich.canExposeEmptyParagraph = true

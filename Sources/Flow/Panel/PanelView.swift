@@ -186,7 +186,11 @@ struct PanelView: View {
                 .foregroundStyle(HUDPalette.muted)
         case .processing:
             ProgressView().controlSize(.small)
-        case .inserted, .copied, .tested, .listUpdated, .unconfirmed, .failed:
+        case .inserted, .copied:
+            let copied = if case .copied = controller.phase { true } else { false }
+            ResultTick(copied: copied, reduceMotion: reduceMotion)
+                .id(copied)
+        case .tested, .listUpdated, .unconfirmed, .failed:
             Image(systemName: resultSymbol)
                 .font(.system(size: 18, weight: .semibold))
                 .foregroundStyle(controller.phase.needsAttention ? HUDPalette.warning : HUDPalette.accentInk)
@@ -433,6 +437,36 @@ private struct ElapsedTime: View {
                 .accessibilityLabel("Recording time")
                 .accessibilityValue(hudDuration(seconds))
         }
+    }
+}
+
+/// The finished circle. The tick draws itself on; a copy then turns into the clipboard,
+/// so pasted and copied still look different.
+private struct ResultTick: View {
+    var copied: Bool
+    var reduceMotion: Bool
+    @State private var drawn = false
+    @State private var showsClipboard = false
+
+    var body: some View {
+        Image(systemName: showsClipboard ? "doc.on.clipboard" : "checkmark")
+            .font(.system(size: 18, weight: .semibold))
+            .foregroundStyle(HUDPalette.accentInk)
+            .symbolEffect(.drawOn, options: .speed(0.7), isActive: !drawn)
+            .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
+            .task {
+                if reduceMotion {
+                    drawn = true
+                    showsClipboard = copied
+                    return
+                }
+                // One frame hidden first, or the draw has nothing to start from.
+                await Task.yield()
+                drawn = true
+                guard copied else { return }
+                do { try await Task.sleep(for: .milliseconds(900)) } catch { return }
+                withAnimation(.smooth(duration: 0.25)) { showsClipboard = true }
+            }
     }
 }
 

@@ -83,7 +83,13 @@ final class DictationController {
     private(set) var transcript = ""
     private(set) var streamedText = ""
     private(set) var isStreamingToField = false
-    private(set) var fallbackPreviewLatched = false
+    private(set) var fallbackPreviewLatched = false {
+        didSet {
+            if fallbackPreviewLatched, !oldValue { previewShownAt = .now }
+            if !fallbackPreviewLatched { previewShownAt = nil }
+        }
+    }
+    @ObservationIgnored private var previewShownAt: ContinuousClock.Instant?
     var showsStreamingPreview: Bool { phase == .processing && fallbackPreviewLatched }
     @ObservationIgnored private var streamingInsertion: StreamingInsertion?
     @ObservationIgnored private var localPreview = ""
@@ -663,6 +669,10 @@ final class DictationController {
                 }
                 if landedAt != anchor { self.continuations.forget(anchor) }
 
+                if delivery.destination == .clipboard {
+                    await self.holdStreamingPreview()
+                    guard !Task.isCancelled, self.resultsToken == token else { return }
+                }
                 self.finish(delivery: delivery, confirmed: confirmed, raw: raw, cleaned: decision.text,
                             app: current, duration: duration, library: library, versions: versions,
                             appleRaw: localRaw, processingDuration: processingDuration)
@@ -710,11 +720,28 @@ final class DictationController {
         let text = DictationCleanupPolicy.withoutEmDashes(text)
         streamedText = text
         if let stream = streamingInsertion {
+            // A healthy field confirms an edit in under 100 ms. One that has not after
+            // 250 ms may take its full second to give up, and a fast model has finished
+            // by then, so show the words in the pill meanwhile.
+            let reveal = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(250))
+                guard let self, !Task.isCancelled, self.resultsToken == token, self.phase == .processing,
+                      !text.isEmpty else { return }
+                self.fallbackPreviewLatched = true
+            }
             let updated = await stream.update(noteDraft(text))
+            reveal.cancel()
             guard resultsToken == token, phase == .processing, !Task.isCancelled else { return }
             isStreamingToField = updated
         }
         if !isStreamingToField, !text.isEmpty { fallbackPreviewLatched = true }
+    }
+
+    /// A model that answers in one chunk would otherwise flash the pill's words and
+    /// collapse at once. The text is already on the clipboard while this waits.
+    private func holdStreamingPreview() async {
+        guard showsStreamingPreview, let shownAt = previewShownAt else { return }
+        try? await Task.sleep(until: shownAt + .milliseconds(900), clock: .continuous)
     }
 
     func copyCompletedResult() {
@@ -768,8 +795,8 @@ final class DictationController {
             case .clipboard: Toast.copied(shown)
             }
         }
-        // "Check insertion" has to stay up long enough to read.
-        dismissAfterBeat(delivery.destination == .clipboard ? .seconds(2) : confirmed ? .milliseconds(700) : .seconds(3))
+        // The tick needs to finish drawing, and "Check insertion" has to stay up long enough to read.
+        dismissAfterBeat(delivery.destination == .clipboard ? .seconds(2) : confirmed ? .milliseconds(1100) : .seconds(3))
     }
 
     private func addLateResult(_ result: CloudResult, token: UUID) {

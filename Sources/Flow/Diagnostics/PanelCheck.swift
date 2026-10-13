@@ -29,8 +29,8 @@ enum PanelCheck {
         try? await Task.sleep(for: .milliseconds(200))
         previous = NSWorkspace.shared.frontmostApplication?.processIdentifier
         print("Initial keyboard owner: \(String(describing: previous))")
-        func snapshot(_ name: String) async {
-            try? await Task.sleep(for: .milliseconds(350))
+        func snapshot(_ name: String, after delay: Duration = .milliseconds(350)) async {
+            try? await Task.sleep(for: delay)
             guard let window = presenter.diagnosticWindow else { return }
             let capture = Process()
             capture.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
@@ -59,7 +59,9 @@ enum PanelCheck {
             await controller.previewPanelForCheck(.processing, text: "", toField: true)
             report[size.rawValue + "PreviewLatched"] = controller.showsStreamingPreview
             await controller.previewPanelForCheck(.copied("Flow panel copy check"))
-            await snapshot(size.rawValue + "-copy")
+            await snapshot(size.rawValue + "-copy-drawing", after: .milliseconds(120))
+            await snapshot(size.rawValue + "-copy-tick", after: .milliseconds(450))
+            await snapshot(size.rawValue + "-copy", after: .milliseconds(700))
             report[size.rawValue + "PreviewCollapsed"] = !controller.showsStreamingPreview
             // Click only our own circle, while another app keeps keyboard focus.
             if let window = presenter.diagnosticWindow, let screen = NSScreen.screens.first {
@@ -74,8 +76,10 @@ enum PanelCheck {
                 report[size.rawValue + "CopyButton"] = NSPasteboard.general.string(forType: .string) == "Flow panel copy check"
                 if report[size.rawValue + "CopyButton"] == true { ownedClipboard = NSPasteboard.general.changeCount }
             }
+            await controller.previewPanelForCheck(.processing, toField: true)
             await controller.previewPanelForCheck(.inserted("The completed response"))
-            await snapshot(size.rawValue + "-tick")
+            await snapshot(size.rawValue + "-tick-drawing", after: .milliseconds(120))
+            await snapshot(size.rawValue + "-tick", after: .milliseconds(500))
             report[size.rawValue + "CompletionFrameStable"] = presenter.diagnosticWindow?.frame == frame
             presenter.hide()
             try? await Task.sleep(for: .milliseconds(500))
