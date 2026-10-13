@@ -80,6 +80,7 @@ final class StreamingInsertion {
     private var draftEnd: Int?
     private var textStart: Int
     private var textEnd: Int
+    private let log = Logger(subsystem: "sh.taf.flow", category: "stream")
 
     init?(field: any StreamingTextField) {
         guard let state = field.read(), state.location >= 0, state.length >= 0,
@@ -121,7 +122,10 @@ final class StreamingInsertion {
         guard !detached else { return false }
         await field.prepareForEdit()
         guard !cancelled else { return false }
-        guard field.read() == expected else { detached = true; return false }
+        guard field.read() == expected else {
+            detach(field.read() == nil ? "field lost focus before the edit" : "field changed before the edit")
+            return false
+        }
         if !didWrite, next.isEmpty { return true }
         if didWrite, next == text { return true }
         // Preserve the common prefix so each new token normally appends at the caret.
@@ -148,7 +152,7 @@ final class StreamingInsertion {
             ? field.replaceEntireDraft(with: next) ?? field.replace(location: 0, length: expected.text.utf16.count, with: next)
             : field.replace(location: location, length: length, with: suffix)
         guard replaced else {
-            detached = true
+            detach("the edit was refused")
             return false
         }
         defer { field.finishEdit() }
@@ -161,9 +165,17 @@ final class StreamingInsertion {
             if confirmsExpectedState() { return true }
             if attempt < 50 { try? await Task.sleep(for: .milliseconds(20)) }
         }
-        detached = true
+        let actual = field.read()
+        detach("the field never showed the edit (draft \(next.utf16.count), field \(actual?.text.utf16.count ?? -1), "
+               + "caret \(actual?.location ?? -1)+\(actual?.length ?? -1), expected \(expected.text.utf16.count) at \(expected.location))")
         awaitingConfirmation = true
         return false
+    }
+
+    /// Lengths and offsets only. Dictated text never goes to the log.
+    private func detach(_ reason: String) {
+        detached = true
+        log.notice("stream detached: \(reason, privacy: .public)")
     }
 
     private func confirmsExpectedState() -> Bool {
@@ -186,6 +198,12 @@ final class StreamingInsertion {
                 pendingEmptyParagraph = false
                 return true
             }
+            // The editor parsed the paste itself, as Markdown composers do.
+            if Self.words(actual.text) == Self.words(text) {
+                expected = actual
+                pendingEmptyParagraph = false
+                return true
+            }
         }
         // A rich editor's placeholder paragraph can disappear on the first
         // paste and reappear after a full rewrite. Allow only one trailing LF
@@ -200,7 +218,40 @@ final class StreamingInsertion {
                 return true
             }
         }
-        return locatesDraft(in: actual)
+        return locatesDraft(in: actual) || acceptsReformattedDraft(actual)
+    }
+
+    /// Letters only. Markdown composers turn a pasted blank line into one paragraph
+    /// break and "- " or "1. " lines into lists, so spacing, punctuation, and list
+    /// numbers change while the words stay put.
+    private static func words(_ text: String) -> String {
+        String(String.UnicodeScalarView(text.unicodeScalars.filter { CharacterSet.letters.contains($0) }))
+    }
+
+    /// The editor rewrote our paste into its own structure. Accept it when the user's
+    /// text on both sides of the draft is untouched and the words between are exactly
+    /// the draft's. Later edits then go by the draft start and the caret.
+    private func acceptsReformattedDraft(_ actual: StreamingFieldState) -> Bool {
+        guard field.canExposeEmptyParagraph, !ownsWholeRichEditor, actual.length == 0,
+              actual.location >= original.location else { return false }
+        let before = Array(original.text.utf16)
+        let after = Array(actual.text.utf16)
+        let slack = before.reduce(0) { $0 + ($1 == 0x0A || $1 == 0xFFFC ? 1 : 0) }
+        let head = textStart
+        let tail = before.count - textEnd
+        var common = 0
+        while common < min(before.count, after.count), before[common] == after[common] { common += 1 }
+        let start = min(common, head)
+        var commonTail = 0
+        while commonTail < min(before.count, after.count) - start,
+              before[before.count - 1 - commonTail] == after[after.count - 1 - commonTail] { commonTail += 1 }
+        guard common >= head - slack, commonTail >= tail - slack else { return false }
+        let end = after.count - min(commonTail, tail)
+        guard start <= end, Self.words(String(decoding: after[start..<end], as: UTF16.self)) == Self.words(text) else { return false }
+        draftEnd = actual.location
+        expected = actual
+        pendingEmptyParagraph = false
+        return true
     }
 
     /// Rich editors with existing paragraphs can leave separators out of
@@ -264,14 +315,14 @@ final class StreamingInsertion {
         defer { field.finishEdit() }
         let restored = StreamingFieldState(text: original.text,
                                             location: original.location + original.length, length: 0)
-        let offsetsDisagree = draftEnd != nil
+        let lenient = draftEnd != nil || ownsWholeRichEditor
         expected = restored
         text = ""
         didWrite = false
         draftEnd = nil
         for attempt in 0..<51 {
             if let actual = field.read(), actual == restored
-                || (offsetsDisagree && actual.text == original.text && actual.length == 0) { return true }
+                || (lenient && actual.length == 0 && Self.words(actual.text) == Self.words(original.text)) { return true }
             if attempt < 50 { try? await Task.sleep(for: .milliseconds(20)) }
         }
         detached = true
