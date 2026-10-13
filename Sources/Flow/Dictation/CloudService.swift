@@ -281,7 +281,7 @@ actor CloudService {
 
     private func onePass(_ audio: Data, route: CloudRoute, context: CleanupContext, scope: Scope, preview: @escaping Preview) async throws -> String {
         let account = route.provider
-        let instruction = "Listen to this recording and return the finished written dictation. Do the transcription and cleanup in this one response. "
+        let instruction = "Transcribe this recording and clean it up in the same response. "
             + refinementInstruction(context)
         switch account.api {
         case .openAI:
@@ -334,21 +334,23 @@ actor CloudService {
 
     private func refinementInstruction(_ context: CleanupContext) -> String {
         var instruction = DictationCleanupPolicy.instruction
-            + "\nThe destination is \(context.appName). \(context.appDescription)."
+            + "\nThe text goes into \(context.appName), \(context.appDescription)."
         switch context.writingContext {
-        case .chat: instruction += " Keep casual language and contractions."
-        case .email: instruction += " Use complete sentences and readable paragraphs without adding a greeting or signature."
-        case .development: instruction += " Preserve technical names, identifiers, commands, and conventional capitalization. Do not turn prose into code."
-        case .document: instruction += " Preserve the document's paragraphs and list structure."
+        case .chat: instruction += " Keep casual wording and contractions."
+        case .email: instruction += " Use complete sentences and clear paragraphs. Do not add a greeting or signature."
+        case .development: instruction += " Keep technical names, identifiers, and commands with their usual capitalization. Do not turn prose into code."
+        case .document: instruction += " Keep the document's paragraphs and lists."
         case .browser, .general: instruction += " Match the speaker's tone."
         }
         if context.transcriptionLanguage == .hinglish {
             instruction += " Write Hindi words in Roman-script Hinglish. Keep English words in English."
         }
-        if !context.vocabulary.isEmpty { instruction += " Correct terms: \(context.vocabulary.joined(separator: ", "))." }
+        if !context.vocabulary.isEmpty { instruction += " Spell these terms exactly: \(context.vocabulary.joined(separator: ", "))." }
         if !context.corrections.isEmpty {
-            instruction += " Corrections: \(context.corrections.map { "\($0.said) means \($0.meant)" }.joined(separator: "; "))."
+            instruction += " Where the speaker says the first form, write the second: "
+                + context.corrections.map { "\"\($0.said)\" as \"\($0.meant)\"" }.joined(separator: "; ") + "."
         }
+        if let details = DictationCleanupPolicy.speakerDetails(context.speakerDetails) { instruction += " " + details }
         return instruction
     }
 

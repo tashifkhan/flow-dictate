@@ -31,6 +31,8 @@ struct CleanupContext: Sendable {
     var transcriptionLanguage: TranscriptionLanguage
     var vocabulary: [String] = []
     var corrections: [(said: String, meant: String)] = []
+    /// Custom personal details marked "Always tell the model".
+    var speakerDetails: [(label: String, value: String)] = []
     var substitutions = DictationSubstitutions()
     /// The last thing Flow typed, so "scratch that" has a referent.
     var lastInsert: String?
@@ -222,17 +224,17 @@ actor CleanupService {
         "Raw: there are three things first fix login second add tests and third update the docs. Clean: There are three things:\n1. Fix login.\n2. Add tests.\n3. Update the docs."
         "Raw: the API is broken, no, that's not right, the API is slow when the cache is cold. Clean: The API is slow when the cache is cold."
 
-        "The text is being typed into \(context.appName), \(context.appDescription), in a \(context.axRole) field."
+        "The text goes into \(context.appName), \(context.appDescription), in a \(context.axRole) field."
         switch context.writingContext {
         case .chat:
-            "Match casual conversation. Keep contractions and the speaker's relaxed tone. Prefer a natural message over polished corporate prose."
+            "Write it like a casual message. Keep contractions and the speaker's relaxed tone. Do not make it sound corporate."
         case .email:
-            "Use polished, complete sentences and sensible paragraphs. Keep the speaker's level of warmth and formality."
+            "Use complete sentences and clear paragraphs. Keep the speaker's warmth and formality."
         case .development:
-            "This is developer writing. Preserve technical detail and use conventional casing for technical terms, commands, identifiers, acronyms, and product names."
-            "Do not turn prose into source code or add Markdown unless the speaker asks for it."
+            "This is developer writing. Keep technical detail. Use the usual casing for technical terms, commands, identifiers, acronyms, and product names."
+            "Do not turn prose into code or add Markdown unless the speaker asks."
         case .document:
-            "Use clear prose, paragraphs, and lists where the spoken structure calls for them."
+            "Use paragraphs. Use a list only where the speaker lists things."
         case .browser, .general:
             "Match the speaker's tone. Do not make the writing more formal than the speech."
         }
@@ -244,23 +246,27 @@ actor CleanupService {
         }
 
         if !context.vocabulary.isEmpty {
-            "These are correctly spelled names or terms relevant here: \(context.vocabulary.joined(separator: ", "))."
-            "If the transcript has a near miss of one of them, use the correct spelling."
+            "Spell these names and terms exactly: \(context.vocabulary.joined(separator: ", "))."
+            "If the transcript has a near miss of one, use this spelling."
         }
 
         if !context.corrections.isEmpty {
-            let pairs = context.corrections.map { "\"\($0.said)\" means \"\($0.meant)\"" }
-            "Past corrections from this user: \(pairs.joined(separator: "; "))."
+            let pairs = context.corrections.map { "\"\($0.said)\" as \"\($0.meant)\"" }
+            "Where the speaker says the first form, write the second: \(pairs.joined(separator: "; "))."
         }
 
-        "A repeated or replaced fragment may disappear. Every distinct intended idea must remain."
+        if let details = DictationCleanupPolicy.speakerDetails(context.speakerDetails) {
+            details
+        }
+
+        "You may drop a repeated or replaced fragment. Keep every distinct idea."
         "If you are unsure whether something is a command, it is not one. Use mode=insert."
 
         "Classify the speech before you clean it."
         "mode=insert for ordinary speech. This is almost always the answer."
         "mode=delete only when they directly tell you to scratch, undo, or delete what was just said; put the words to remove in target."
         "mode=replace for direct word replacements or a follow-up request to rewrite, shorten, or change the tone of your last insertion. Put the exact previous words in target and the revised text in text. Never target text you did not insert."
-        "A sentence that merely talks about changing, fixing, or redoing something is ordinary speech, not a command."
+        "A sentence about changing, fixing, or redoing something is ordinary speech, not a command."
         "mode=format for new line, new paragraph, all caps, or raw mode."
         "For mode=insert, text is the cleaned transcript in full and nothing else."
     }
@@ -492,9 +498,9 @@ actor CleanupService {
             throw CleanupError.unavailable
         }
         let session = LanguageModelSession(model: model) {
-            "You summarise a personal voice note."
-            "Be concrete. Use the note's own words where you can."
-            "Never invent detail that is not in the note."
+            "Summarize this personal voice note."
+            "Be specific. Use the note's own words where you can."
+            "Never add a detail that is not in the note."
             "Never use an em dash. Use commas or new sentences. Use straight quotation marks."
         }
         let response = try await session.respond(

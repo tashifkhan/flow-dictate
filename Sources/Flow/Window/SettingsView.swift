@@ -367,10 +367,36 @@ struct SettingsView: View {
                 TextField("Phone number", text: $lexicon.personalDetails.phone)
                 TextField("Company", text: $lexicon.personalDetails.company)
                 TextField("Address", text: $lexicon.personalDetails.address)
+                ForEach($lexicon.personalDetails.custom) { $detail in
+                    HStack(spacing: 8) {
+                        TextField("Field", text: $detail.label, prompt: Text("Field, like GitHub"))
+                            .labelsHidden()
+                            .frame(width: 150)
+                        TextField("Value", text: $detail.value, prompt: Text("Value"))
+                            .labelsHidden()
+                        Toggle("Always tell the model", isOn: $detail.alwaysInPrompt)
+                            .toggleStyle(.checkbox)
+                            .help("Send this with every cleanup request, not only when you say \"my \(detail.spokenLabel.isEmpty ? "field" : detail.spokenLabel)\"")
+                        Button {
+                            lexicon.personalDetails.custom.removeAll { $0.id == detail.id }
+                        } label: {
+                            Image(systemName: "minus.circle")
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Remove this field")
+                        .accessibilityLabel("Remove \(detail.spokenLabel.isEmpty ? "field" : detail.spokenLabel)")
+                    }
+                }
+                Button {
+                    lexicon.personalDetails.custom.append(.init())
+                } label: {
+                    Label("Add a field", systemImage: "plus")
+                }
+                .buttonStyle(.borderless)
             } header: {
                 Text("Personal details")
             } footer: {
-                Text("Say \"add my email here\" to insert your saved email, or use \"my email\" inside a sentence. Empty details stay as spoken. Details are saved on this Mac. Expanded details in a sentence reach your configured cloud model when cloud cleanup runs.")
+                Text("Say \"add my email here\" to insert your saved email, or say \"my email\" inside a sentence. Fields you add work the same way, so one named GitHub answers to \"my GitHub\". Empty details stay as spoken. Details stay on this Mac, and a detail goes to your cloud model only when you say it, unless you tick Always tell the model. Then it goes with every request, so the model can spell it and know what you mean.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section {

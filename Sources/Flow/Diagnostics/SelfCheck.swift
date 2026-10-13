@@ -764,6 +764,27 @@ enum SelfCheck {
         expect(lexicon.substitutions.apply("ta shif") == "Tashif", "older replacements still work after newer rules are added")
         expect(Lexicon(defaults: lexiconDefaults).personalDetails == lexicon.personalDetails, "personal details survive a reload")
         expect(Lexicon(defaults: lexiconDefaults).substitutions.apply("ta shif") == "Tashif", "replacement rules survive a reload")
+        lexicon.personalDetails.custom = [
+            .init(label: "GitHub", value: "github.com/tashifkhan", alwaysInPrompt: true),
+            .init(label: "my work email", value: "tashif@work.example"),
+            .init(label: "Empty", value: "  "),
+        ]
+        let custom = lexicon.substitutions
+        expect(custom.directInsertion("Add my GitHub here.") == "github.com/tashifkhan", "a custom field answers to \"my\" plus its name")
+        expect(custom.apply("Send it to my work email.") == "Send it to tashif@work.example.", "a field named with \"my\" still matches once")
+        expect(custom.apply("Check my empty") == "Check my empty", "a field without a value stays as spoken")
+        expect(custom.apply("My GitHub is down") == "My GitHub is down", "statements about a custom field stay as spoken")
+        expect(lexicon.promptDetails.map(\.label) == ["GitHub"], "only fields marked Always tell the model reach every prompt")
+        let aboutSpeaker = DictationCleanupPolicy.speakerDetails(lexicon.promptDetails) ?? ""
+        expect(aboutSpeaker.contains("their GitHub is github.com/tashifkhan") && !aboutSpeaker.contains("work"),
+               "the prompt names the chosen fields and leaves the rest out")
+        expect(DictationCleanupPolicy.speakerDetails([]) == nil, "no fields add nothing to the prompt")
+        expect(Lexicon(defaults: lexiconDefaults).personalDetails.custom == lexicon.personalDetails.custom, "custom fields survive a reload")
+        let legacy = Data(#"{"name":"Tashif","email":"person@example.com","phone":"","company":"","address":""}"#.utf8)
+        let decoded = try? JSONDecoder().decode(Lexicon.PersonalDetails.self, from: legacy)
+        expect(decoded?.email == "person@example.com" && decoded?.custom.isEmpty == true,
+               "details saved before custom fields still load")
+        lexicon.personalDetails.custom = []
         let nonCascading = DictationSubstitutions(rules: [.init(from: "alpha", to: "beta"), .init(from: "beta", to: "gamma")])
         expect(nonCascading.apply("alpha beta") == "beta gamma", "replacement values do not trigger another rule")
         let ambiguous = DictationSubstitutions(vocabulary: ["Tashif", "Tashim"])
