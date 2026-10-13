@@ -195,6 +195,20 @@ after a denied request. Loading an existing key does not rewrite it.
 Voice commands ride the same round trip as ordinary dictation: "scratch that",
 "replace X with Y", "new paragraph".
 
+Finished writing streams into the focused field as the model generates it. Native
+fields use Accessibility edits; readable browser and Electron fields use Unicode
+key events so the app receives input events. Flow checks the field and caret before
+each update. If you move focus or edit the text, it stops updating the field and
+shows the remaining response in the pill. Escape restores the original selection
+when the draft is still unchanged and focused. The final result reconciles the draft
+with cleanup, replacement rules, and list numbering.
+
+If the field cannot support tracked updates, the pill expands to show the live
+response and Flow uses its existing paste path once generation finishes. With no
+editable field, it copies the finished response and collapses to the clipboard icon.
+Providers that reject streaming still return a finished response through the same
+delivery path.
+
 Settings › Vocabulary includes saved name, email, phone, company, and address fields.
 Say "add my email here" to insert your saved email, or include "my email" in a sentence
 to expand it there. Direct requests insert the exact saved value without a model call.

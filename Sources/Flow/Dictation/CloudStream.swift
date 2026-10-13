@@ -1,6 +1,6 @@
 import Foundation
 
-/// Combines provider SSE events without exposing partial text to the destination.
+/// Combines provider SSE events into snapshots for live previews and final validation.
 /// Token counts come from usage events, never from counting characters or words.
 struct CloudStream {
     let api: CloudAPI

@@ -4,10 +4,23 @@ private final class RequestCollector: @unchecked Sendable {
     private let lock = NSLock()
     private var values: [UUID: CloudRequestRecord] = [:]
     private var lateValues: [CloudResult] = []
+    private var previewValues: [String] = []
+    private var previewWhileRunning = false
     func record(_ value: CloudRequestRecord) { lock.withLock { values[value.id] = value } }
     func late(_ value: CloudResult) { lock.withLock { lateValues.append(value) } }
     var requests: [CloudRequestRecord] { lock.withLock { Array(values.values) } }
     var results: [CloudResult] { lock.withLock { lateValues } }
+    func preview(_ text: String) {
+        lock.withLock {
+            previewValues.append(text)
+            if text == "Hello", values.values.contains(where: { $0.status == .running }) {
+                previewWhileRunning = true
+            }
+        }
+    }
+    var previews: [String] { lock.withLock { previewValues } }
+    var previewArrivedBeforeCompletion: Bool { lock.withLock { previewWhileRunning } }
+    func clearPreviews() { lock.withLock { previewValues = []; previewWhileRunning = false } }
 }
 
 enum CloudHTTPCheck {
@@ -27,10 +40,14 @@ enum CloudHTTPCheck {
             return CloudRung(step: .twoPass(transcriber: nil, refiner: route))
         }
         for api in [CloudAPI.openAI, .google, .anthropic] {
+            collector.clearPreviews()
             let route = rung(api, "stream-" + api.rawValue)
-            let result = await service.run([route], job: job, makeContext: { _ in context }, progress: { _ in }, late: { _ in })
+            let result = await service.run([route], job: job, makeContext: { _ in context }, progress: { _ in }, late: { _ in },
+                                           preview: { text in collector.preview(text) })
             let request = collector.requests.first { $0.configID == route.id }
             checks["\(api.rawValue) streamed output"] = result?.text == "Hello world."
+            checks["\(api.rawValue) publishes partial text before completion"] = collector.previews.contains("Hello")
+                && collector.previews.last == "Hello world." && collector.previewArrivedBeforeCompletion
             checks["\(api.rawValue) full request word speed"] = request?.outputWords == 2
                 && request?.wordsPerSecond == request?.elapsed.map { 2 / $0 }
                 && request?.wordsPerMinute == request?.elapsed.map { (2 / $0) * 60 }
@@ -74,6 +91,19 @@ enum CloudHTTPCheck {
         try? await Task.sleep(for: .milliseconds(1300))
         checks["parallel late output and request retain their IDs"] = collector.results.contains { $0.configID == slow.id }
             && collector.requests.contains { $0.configID == slow.id && $0.dictationID == id && $0.status == .succeeded }
+        collector.clearPreviews()
+        let preferred = rung(.openAI, "preferred-slow")
+        let alternate = rung(.openAI, "alternate-fast")
+        let priorityWinner = await service.run([preferred, alternate], job: parallelJob, makeContext: { _ in context },
+                                              progress: { _ in }, late: { _ in }, preview: { text in collector.preview(text) })
+        checks["parallel drafts come only from the highest-ranked active config"] = priorityWinner?.configID == preferred.id
+            && collector.previews.contains("Hello") && !collector.previews.contains { $0.hasPrefix("world") }
+        collector.clearPreviews()
+        let strayed = rung(.openAI, "strayed")
+        let recovered = await service.run([strayed, fallback], job: job, makeContext: { _ in context }, progress: { _ in },
+                                          late: { _ in }, preview: { text in collector.preview(text) })
+        checks["rejected streamed drafts clear before fallback"] = recovered?.configID == fallback.id
+            && collector.previews.contains("Invented") && collector.previews.contains("") && collector.previews.last == "Hello world."
         var emailJob = job
         emailJob.localRaw = "Add my email here"
         var emailContext = context

@@ -80,6 +80,16 @@ final class DictationController {
     private(set) var lastTestTranscript: String?
     /// The live transcript, volatile tail included. Shown, never inserted.
     private(set) var transcript = ""
+    private(set) var streamedText = ""
+    private(set) var isStreamingToField = false
+    var showsStreamingPreview: Bool { phase == .processing && !isStreamingToField }
+    @ObservationIgnored private var streamingInsertion: StreamingInsertion?
+    @ObservationIgnored private var localPreview = ""
+    @ObservationIgnored private var showsLocalPreview = false
+    @ObservationIgnored private var deliveryFocus: StreamingFocus?
+    @ObservationIgnored private var noteStreamPrefix = ""
+    var noteStreamingField: (any StreamingTextField)?
+    var onNoteStreamCommit: (() -> Void)?
     /// Every usable answer for the last dictation, inserted one first. Parallel
     /// routes keep adding to it after insertion; the menu bar offers a swap.
     private(set) var results: [CloudResult] = []
@@ -312,6 +322,10 @@ final class DictationController {
         }
 
         transcript = ""
+        streamedText = ""
+        isStreamingToField = false
+        streamingInsertion = nil
+        localPreview = ""
         results = []
         insertedResultID = nil
         processingDetail = nil
@@ -385,6 +399,21 @@ final class DictationController {
         // Nil means a microphone test: shown, never delivered.
         let destination: DictationTarget? = isTesting ? nil : target
         let previous = run
+        let token = UUID()
+        resultsToken = token
+        streamedText = ""
+        localPreview = ""
+        showsLocalPreview = cloudSettings.readyRungs.isEmpty
+        let deliveryApp = FrontApp.current()
+        deliveryFocus = StreamingFocus(app: deliveryApp)
+        noteStreamPrefix = ""
+        if case .note = destination, let field = noteStreamingField, let state = field.read() {
+            streamingInsertion = StreamingInsertion(field: field)
+            noteStreamPrefix = state.text.isEmpty || state.text.hasSuffix(" ") || state.text.hasSuffix("\n") ? "" : " "
+        } else {
+            streamingInsertion = destination == .cursor ? StreamingInsertion.capture(in: deliveryApp) : nil
+        }
+        isStreamingToField = streamingInsertion != nil
 
         let cloudSettings = self.cloudSettings
         run = Task { [pipeline, cleanup, cloud, inserter, library, lexicon] in
@@ -396,19 +425,22 @@ final class DictationController {
             do {
                 localRaw = try await pipeline.finish()
             } catch {
+                guard !Task.isCancelled, self.resultsToken == token else { return }
                 self.fail(error.localizedDescription)
                 return
             }
 
-            let token = UUID()
-            self.resultsToken = token
+            guard !Task.isCancelled, self.resultsToken == token else { return }
+            await inserter.waitForModifierRelease()
             let versions = DictationVersionCapture(library: library)
             let refineEnabled = Settings.shared.cleanupEnabled
             let localContext = self.cleanupContext(raw: localRaw, app: app, lexicon: lexicon)
             let directValue = localContext.substitutions.directInsertion(localRaw)
             let localTask = Task { @MainActor in
                 let availability = await cleanup.availability
-                var localDecision = refineEnabled ? await cleanup.clean(localRaw, context: localContext) : .raw(localContext.substitutions.apply(localRaw))
+                var localDecision = refineEnabled ? await cleanup.clean(localRaw, context: localContext, preview: { text in
+                    await self.receiveLocalPreview(text, token: token)
+                }) : .raw(localContext.substitutions.apply(localRaw))
                 localDecision.text = DictationCleanupPolicy.withoutEmDashes(localDecision.text)
                 if localDecision.mode == .insert, directValue == nil {
                     localDecision.text = SpokenListFormatter.format(localDecision.text).text
@@ -446,7 +478,11 @@ final class DictationController {
                                                          configID: result.configID))
                         self.addLateResult(result, token: token)
                     }
-                })
+                }, preview: { text in await self.receivePreview(text, token: token) })
+            if outcome == nil {
+                self.showsLocalPreview = true
+                await self.receivePreview(self.localPreview, token: token)
+            }
             // Escape while the cloud was working. cancel() has already reset the panel;
             // the answer must not land anyway.
             guard !Task.isCancelled else { localTask.cancel(); return }
@@ -456,6 +492,9 @@ final class DictationController {
                                                  text: outcome.text ?? outcome.raw, configID: outcome.configID))
             }
             guard !raw.isEmpty else {
+                if let stream = self.streamingInsertion { _ = await stream.rollback() }
+                self.streamingInsertion = nil
+                self.isStreamingToField = false
                 // Distinguish "the mic gave us nothing" from "you did not say anything".
                 if self.levels.peak <= 0.001 {
                     self.fail("No sound reached the microphone. Check the input in Flow's Microphone settings.")
@@ -486,6 +525,9 @@ final class DictationController {
                 }
                 let result = DictationComposer.compose(formatted.replacingText(listText), previous: openList)
                 guard !result.insertion.isEmpty else {
+                    if let stream = self.streamingInsertion { _ = await stream.rollback() }
+                    self.streamingInsertion = nil
+                    self.isStreamingToField = false
                     // "Start a numbered list" on its own: nothing to type, only state.
                     self.continuations.remember(Self.worthKeeping(result.continuation), for: anchor, now: Self.uptime)
                     self.transcript = ""
@@ -538,7 +580,21 @@ final class DictationController {
             // In-note dictation skips insertion entirely: you are writing, not driving
             // another app.
             if case .note(let id) = destination {
-                self.onNoteText?(id, decision.text)
+                if let stream = self.streamingInsertion {
+                    let updated = await stream.update(self.noteDraft(decision.text))
+                    guard !Task.isCancelled, self.resultsToken == token else { return }
+                    if updated {
+                        self.onNoteStreamCommit?()
+                    } else {
+                        inserter.keepOnClipboard(decision.text)
+                        self.finish(delivery: .init(text: decision.text, destination: .clipboard), confirmed: true,
+                                    raw: raw, cleaned: decision.text, app: app, duration: duration, library: library,
+                                    versions: versions, appleRaw: localRaw, processingDuration: processingDuration)
+                        return
+                    }
+                } else {
+                    self.onNoteText?(id, decision.text)
+                }
                 self.continuations.remember(Self.worthKeeping(composed?.continuation), for: anchor, now: Self.uptime)
                 self.finish(delivery: .init(text: decision.text, destination: .textField), confirmed: true,
                             raw: raw, cleaned: decision.text, app: app, duration: duration, library: library,
@@ -550,12 +606,32 @@ final class DictationController {
                 // Let the hotkey's modifiers come up, so a keystroke paste is plain ⌘V.
                 await inserter.waitForModifierRelease()
                 guard !Task.isCancelled else { return }
-                // Focus may have changed during recognition or cleanup. Decide whether
-                // to insert or copy using the field active now.
+                // A moved focus receives the clipboard fallback. Final updates stay
+                // in the field captured when recording stopped.
                 let current = FrontApp.current()
                 let checkable = decision.mode == .insert || decision.mode == .format
                 let caret = checkable ? inserter.caretSnapshot(for: current) : nil
-                let delivery = try inserter.apply(decision, in: current)
+                let delivery: Inserter.Result
+                if let stream = self.streamingInsertion, checkable {
+                    let updated = await stream.update(decision.text)
+                    guard !Task.isCancelled, self.resultsToken == token else { return }
+                    if updated {
+                        delivery = inserter.finishStreaming(decision.text)
+                    } else {
+                        inserter.keepOnClipboard(decision.text)
+                        delivery = .init(text: decision.text, destination: .clipboard)
+                    }
+                    self.streamingInsertion = nil
+                } else {
+                    // Commands have no partial insertion. A failed stream never pastes
+                    // the full answer into a newly focused field.
+                    if checkable, self.deliveryFocus?.isCurrent != true {
+                        inserter.keepOnClipboard(decision.text)
+                        delivery = .init(text: decision.text, destination: .clipboard)
+                    } else {
+                        delivery = try inserter.apply(decision, in: current)
+                    }
+                }
 
                 // A spoken correction is the best training signal there is.
                 if decision.mode == .replace, let target = decision.target {
@@ -563,7 +639,7 @@ final class DictationController {
                 }
 
                 var confirmed = true
-                if delivery.destination == .textField, let caret {
+                if delivery.destination == .textField, let caret, !self.isStreamingToField {
                     confirmed = await inserter.confirmInsertion(since: caret)
                     if !confirmed {
                         inserter.keepOnClipboard(decision.text.trimmingCharacters(in: .whitespacesAndNewlines))
@@ -596,7 +672,8 @@ final class DictationController {
         }
         var context = cleanupContext(raw: raw, app: app, lexicon: lexicon)
         if alreadyResolved { context.substitutions.rules = [] }
-        return await cleanup.clean(raw, context: context)
+        let token = resultsToken
+        return await cleanup.clean(raw, context: context, preview: { text in await self.receivePreview(text, token: token) })
     }
 
     private func cleanupContext(raw: String, app: FrontApp, lexicon: Lexicon) -> CleanupContext {
@@ -612,6 +689,27 @@ final class DictationController {
                 substitutions: lexicon.substitutions,
                 lastInsert: self.inserter.lastInsert
         )
+    }
+
+    private func receiveLocalPreview(_ text: String, token: UUID) async {
+        guard resultsToken == token, phase == .processing, !Task.isCancelled else { return }
+        localPreview = text
+        if showsLocalPreview { await receivePreview(text, token: token) }
+    }
+
+    private func receivePreview(_ text: String, token: UUID) async {
+        guard resultsToken == token, phase == .processing, !Task.isCancelled else { return }
+        let text = DictationCleanupPolicy.withoutEmDashes(text)
+        streamedText = text
+        if let stream = streamingInsertion {
+            let updated = await stream.update(noteDraft(text))
+            guard resultsToken == token, phase == .processing, !Task.isCancelled else { return }
+            isStreamingToField = updated
+        }
+    }
+
+    private func noteDraft(_ text: String) -> String {
+        text.isEmpty || text.hasPrefix("\n") ? text : noteStreamPrefix + text
     }
 
     private func finish(
@@ -631,6 +729,8 @@ final class DictationController {
             appleRaw: appleRaw,
             processingDuration: processingDuration
         )
+        streamingInsertion = nil
+        isStreamingToField = false
         library.add(record)
         versions.attach(to: record.id)
         let shown = delivery.text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -693,6 +793,13 @@ final class DictationController {
 
     /// Escape, or a dictation you thought better of.
     func cancel() {
+        resultsToken = UUID()
+        let stream = streamingInsertion
+        stream?.invalidate()
+        streamingInsertion = nil
+        isStreamingToField = false
+        streamedText = ""
+        if let stream { Task { _ = await stream.rollback() } }
         run?.cancel()
         run = nil
         startedAt = nil
@@ -723,6 +830,12 @@ final class DictationController {
     }
 
     private func fail(_ message: String) {
+        let stream = streamingInsertion
+        stream?.invalidate()
+        streamingInsertion = nil
+        isStreamingToField = false
+        streamedText = ""
+        if let stream { Task { _ = await stream.rollback() } }
         log.error("\(message, privacy: .public)")
         Task { [pipeline] in await pipeline.cancel() }
         limitTask?.cancel()

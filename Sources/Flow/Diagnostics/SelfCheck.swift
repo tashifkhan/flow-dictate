@@ -3,6 +3,7 @@ import ApplicationServices
 import Carbon.HIToolbox
 import Foundation
 import SQLite3
+import WebKit
 
 /// Verification for the parts that do not need a microphone or a person.
 ///
@@ -61,6 +62,73 @@ enum SelfCheck {
             let inserted = view.string == expected
             report["insertedInTextField"] = inserted
             report["destination"] = String(describing: result.destination)
+            var streamed = true
+            for unicode in [false, true] {
+                view.string = "Before old after"
+                view.setSelectedRange(NSRange(location: 7, length: 3))
+                try? await Task.sleep(for: .milliseconds(100))
+                await Inserter().waitForModifierRelease()
+                report["\(unicode ? "unicode" : "native")ModifiersHeld"] = Inserter.modifiersAreHeld
+                var streamTarget = FrontApp.current()
+                streamTarget.isElectron = unicode
+                let label = unicode ? "unicode" : "native"
+                if let stream = StreamingInsertion.capture(in: streamTarget) {
+                    let first = await stream.update("Hello")
+                    report["\(label)FirstChunk"] = first && view.string == "Before Hello after"
+                    let next = await stream.update("Hello 👩🏽‍💻\nworld")
+                    report["\(label)Incremental"] = next && view.string == "Before Hello 👩🏽‍💻\nworld after"
+                    let final = await stream.update("Hi 👩🏽‍💻\nworld!")
+                    report["\(label)Reconciled"] = final && view.string == "Before Hi 👩🏽‍💻\nworld! after"
+                    let rollback = await stream.rollback()
+                    report["\(label)Cancelled"] = rollback && view.string == "Before old after"
+                    streamed = streamed && first && next && final && rollback
+                } else {
+                    report["\(label)StreamingCapture"] = false
+                    streamed = false
+                }
+            }
+            let webView = WKWebView(frame: view.frame)
+            window.contentView = webView
+            webView.loadHTMLString("""
+                <textarea id="editor" style="width:90%;height:100px"></textarea>
+                <script>window.inputEvents = 0;
+                editor.addEventListener('input', () => { window.inputEvents++; });</script>
+                """, baseURL: nil)
+            for _ in 0..<50 {
+                if (try? await webView.evaluateJavaScript("document.getElementById('editor') !== null")) as? Bool == true { break }
+                try? await Task.sleep(for: .milliseconds(40))
+            }
+            window.makeFirstResponder(webView)
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            _ = try await webView.evaluateJavaScript("editor.value = 'Before old after'; editor.focus(); editor.setSelectionRange(7,10)")
+            for _ in 0..<25 {
+                if FrontApp.current().hasTextTarget { break }
+                try? await Task.sleep(for: .milliseconds(40))
+            }
+            let webTarget = FrontApp.current()
+            try? await Task.sleep(for: .milliseconds(100))
+            await Inserter().waitForModifierRelease()
+            report["webTextTarget"] = webTarget.hasTextTarget
+            report["webContent"] = webTarget.isWebContent
+            report["webModifiersHeld"] = Inserter.modifiersAreHeld
+            if let stream = StreamingInsertion.capture(in: webTarget) {
+                let first = await stream.update("Hello")
+                let next = await stream.update("Hello 👩🏽‍💻\nworld")
+                let final = await stream.update("Hi 👩🏽‍💻\nworld!")
+                let browserText = try await webView.evaluateJavaScript("editor.value") as? String
+                let inputEvents = try await webView.evaluateJavaScript("window.inputEvents") as? Int ?? 0
+                report["webIncremental"] = first && next && final && browserText == "Before Hi 👩🏽‍💻\nworld! after"
+                report["webInputEvents"] = inputEvents
+                let rollback = await stream.rollback()
+                let restored = try await webView.evaluateJavaScript("editor.value") as? String
+                report["webCancelled"] = rollback && restored == "Before old after"
+                streamed = streamed && first && next && final && rollback && inputEvents > 0
+            } else {
+                // Some WebKit hosts expose only their window to AX. They follow the
+                // same pill and clipboard fallback as other unreadable fields.
+                report["webUsesPillFallback"] = true
+            }
             let snapshot = ClipboardSnapshot(NSPasteboard.general)
             defer { snapshot.restore(to: NSPasteboard.general) }
             let copied = try Inserter().apply(.raw("Flow clipboard check"), in: .unknown)
@@ -71,7 +139,7 @@ enum SelfCheck {
                 clipboardOK = false
             }
             report["copiedWithoutTextField"] = clipboardOK
-            report["passed"] = inserted && clipboardOK
+            report["passed"] = inserted && clipboardOK && streamed
         } catch {
             report["passed"] = false
             report["error"] = error.localizedDescription

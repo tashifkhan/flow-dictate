@@ -40,6 +40,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         MainActor.assumeIsolated {
             if CommandLine.arguments.contains("--self-check") { SelfCheck.run() }
+            if CommandLine.arguments.contains("--check-streaming") {
+                Task { await StreamingCheck.run() }
+                return
+            }
             if let index = CommandLine.arguments.firstIndex(of: "--check-cloud-live"),
                CommandLine.arguments.indices.contains(index + 2) {
                 let audio = CommandLine.arguments[index + 1]

@@ -21,6 +21,7 @@ struct PanelView: View {
     /// Errors need words, so they get a wider pill than the capsule.
     static let failureWidth: CGFloat = 236
     static let morphDuration = 0.18
+    static let streamingFrame = CGSize(width: 380, height: 244)
 
     @Bindable var controller: DictationController
     var presentation: PanelPresentation
@@ -30,7 +31,10 @@ struct PanelView: View {
     @State private var entered = false
     @State private var expanded = false
 
-    private var isCompact: Bool { Settings.shared.panelSize == .compact }
+    private var isCompact: Bool {
+        if case .copied = controller.phase { return true }
+        return Settings.shared.panelSize == .compact
+    }
 
     private var isCapturing: Bool {
         switch controller.phase {
@@ -41,9 +45,46 @@ struct PanelView: View {
 
     var body: some View {
         Group {
-            if isCompact { hud } else { standard }
+            if controller.showsStreamingPreview { streamingPreview }
+            else if isCompact { hud } else { standard }
         }
         .onExitCommand(perform: onCancel)
+    }
+
+    private var streamingPreview: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 9) {
+                ProgressView().controlSize(.small)
+                Text(controller.processingDetail ?? "Writing")
+                    .font(.caption).foregroundStyle(HUDPalette.muted)
+                    .lineLimit(1)
+                Spacer()
+                Button(action: onCancel) {
+                    Image(systemName: "xmark").font(.system(size: 11, weight: .semibold))
+                        .frame(width: 24, height: 24)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Cancel dictation")
+            }
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(controller.streamedText.isEmpty ? "Waiting for text…" : controller.streamedText)
+                            .font(.callout)
+                            .foregroundStyle(controller.streamedText.isEmpty ? HUDPalette.muted : HUDPalette.ink)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Color.clear.frame(height: 1).id("streamEnd")
+                    }
+                }
+                .onChange(of: controller.streamedText) { _, _ in proxy.scrollTo("streamEnd", anchor: .bottom) }
+            }
+        }
+        .padding(18)
+        .frame(width: Self.streamingFrame.width - 36, height: Self.streamingFrame.height - 36)
+        .hudSurface(cornerRadius: 22)
+        .frame(width: Self.streamingFrame.width, height: Self.streamingFrame.height, alignment: .bottom)
+        .animation(reduceMotion ? nil : .easeInOut(duration: Self.morphDuration), value: controller.showsStreamingPreview)
     }
 
     // MARK: - Compact HUD

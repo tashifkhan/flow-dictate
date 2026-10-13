@@ -191,7 +191,7 @@ enum CloudTelemetryCheck {
                    "Gemini excludes thought parts while keeping their billable usage")
             var unfinished = CloudStream(api: .openAI)
             unfinished.consume(["choices": [["delta": ["content": "Partial"]]]], elapsed: 0.1)
-            expect((try? unfinished.responseJSON()) == nil, "interrupted streams cannot insert partial text")
+            expect((try? unfinished.responseJSON()) == nil, "interrupted streams cannot finalize partial text")
 
             let url = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("flow-cost-check-\(UUID()).sqlite")
             defer { try? FileManager.default.removeItem(at: url) }

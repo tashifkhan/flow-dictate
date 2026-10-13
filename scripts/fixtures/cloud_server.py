@@ -40,6 +40,8 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         if model == 'slow':
             time.sleep(1.1)
+        if model == 'preferred-slow':
+            time.sleep(0.4)
         if model == 'cancel':
             time.sleep(0.4)
         if 'streamGenerateContent' in self.path:
@@ -53,6 +55,10 @@ class Handler(BaseHTTPRequestHandler):
                       {'type': 'message_delta', 'usage': {'output_tokens': 20}}, {'type': 'message_stop'}]
         else:
             first, rest = 'Hello', ' world.'
+            if model == 'alternate-fast':
+                first, rest = 'world', ' Hello.'
+            if model == 'strayed':
+                first, rest = 'Invented', ' unrelated words.'
             if model == 'echo-input':
                 first, rest = body['messages'][-1]['content'], ''
             if model == 'wrong-email':

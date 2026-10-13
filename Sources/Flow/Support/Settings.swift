@@ -328,7 +328,7 @@ final class Settings {
         ) { _ in
             MainActor.assumeIsolated { Settings.shared.flushKeys() }
         }
-        let diagnosticFlags = ["--self-check", "--check-cloud-http", "--probe-focus", "--check-insertion", "--check-cloud-live"]
+        let diagnosticFlags = ["--self-check", "--check-streaming", "--check-cloud-http", "--probe-focus", "--check-insertion", "--check-cloud-live"]
         if !diagnosticFlags.contains(where: CommandLine.arguments.contains) {
             Task { await self.loadCloudKeys() }
         }

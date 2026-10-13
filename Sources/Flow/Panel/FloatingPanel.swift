@@ -42,7 +42,11 @@ final class PanelPresenter {
     private let presentation = PanelPresentation()
 
     /// Follows the setting, so switching size takes effect on the next show().
-    private static var size: CGSize { Settings.shared.panelSize.frame }
+    private var size: CGSize {
+        if controller.showsStreamingPreview { return PanelView.streamingFrame }
+        if case .copied = controller.phase { return PanelSize.compact.frame }
+        return Settings.shared.panelSize.frame
+    }
 
     init(controller: DictationController) {
         self.controller = controller
@@ -54,8 +58,8 @@ final class PanelPresenter {
         self.panel = panel
         // The hosting view self-sizes, but the window does not shrink on its own after
         // the setting changes, so pin the size before positioning reads the frame.
-        if panel.frame.size != Self.size {
-            panel.setContentSize(Self.size)
+        if panel.frame.size != size {
+            panel.setContentSize(size)
         }
         position(panel)
         // orderFrontRegardless, not makeKeyAndOrderFront: the whole point is not to
@@ -73,8 +77,19 @@ final class PanelPresenter {
 
     var isVisible: Bool { panel?.isVisible == true }
 
+    func refreshLayout() {
+        guard let panel, panel.isVisible, panel.frame.size != size else { return }
+        let old = panel.frame
+        var frame = NSRect(x: old.midX - size.width / 2, y: old.minY, width: size.width, height: size.height)
+        if let visible = (panel.screen ?? NSScreen.main)?.visibleFrame {
+            frame.origin.x = min(max(frame.minX, visible.minX + 12), visible.maxX - frame.width - 12)
+            frame.origin.y = min(max(frame.minY, visible.minY + 12), visible.maxY - frame.height - 12)
+        }
+        panel.setFrame(frame, display: true, animate: !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
+    }
+
     private func make() -> FloatingPanel {
-        let panel = FloatingPanel(contentRect: NSRect(origin: .zero, size: Self.size))
+        let panel = FloatingPanel(contentRect: NSRect(origin: .zero, size: size))
         let root = PanelView(controller: controller, presentation: presentation) { [weak self] in
             self?.controller.cancel()
             self?.hide()
@@ -86,7 +101,7 @@ final class PanelPresenter {
     }
 
     private func position(_ panel: FloatingPanel) {
-        let size = panel.frame.size == .zero ? Self.size : panel.frame.size
+        let size = panel.frame.size == .zero ? size : panel.frame.size
 
         switch Settings.shared.placement {
         case .nearCursor:
