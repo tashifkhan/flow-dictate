@@ -43,6 +43,7 @@ struct SettingsView: View {
     @State private var launchAtLogin = LoginItem.isEnabled
     @State private var loginError: String?
     @State private var newWord = ""
+    @State private var newWordMeaning = ""
     @State private var newFrom = ""
     @State private var newCorrection = ""
     /// Transient feedback for a bulk add or an import: "added 34 words".
@@ -367,10 +368,44 @@ struct SettingsView: View {
                 TextField("Phone number", text: $lexicon.personalDetails.phone)
                 TextField("Company", text: $lexicon.personalDetails.company)
                 TextField("Address", text: $lexicon.personalDetails.address)
+                ForEach($lexicon.personalDetails.custom) { $detail in
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(spacing: 8) {
+                            TextField("Name", text: $detail.label, prompt: Text("Name, like GitHub"))
+                                .labelsHidden()
+                                .frame(width: 150)
+                            TextField("Description", text: $detail.description, prompt: Text("Description, like personal profile link"))
+                                .labelsHidden()
+                                .foregroundStyle(.secondary)
+                            Button {
+                                lexicon.personalDetails.custom.removeAll { $0.id == detail.id }
+                            } label: {
+                                Image(systemName: "minus.circle")
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Remove this field")
+                            .accessibilityLabel("Remove \(detail.spokenLabel.isEmpty ? "field" : detail.spokenLabel)")
+                        }
+                        HStack(spacing: 8) {
+                            TextField("Value", text: $detail.value, prompt: Text("Value"))
+                                .labelsHidden()
+                            Toggle("Always tell the model", isOn: $detail.alwaysInPrompt)
+                                .toggleStyle(.checkbox)
+                                .help("Send this with every cleanup request, not only when you say \"my \(detail.spokenLabel.isEmpty ? "field" : detail.spokenLabel)\"")
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+                Button {
+                    lexicon.personalDetails.custom.append(.init())
+                } label: {
+                    Label("Add a field", systemImage: "plus")
+                }
+                .buttonStyle(.borderless)
             } header: {
                 Text("Personal details")
             } footer: {
-                Text("Say \"add my email here\" to insert your saved email, or use \"my email\" inside a sentence. Empty details stay as spoken. Details are saved on this Mac. Expanded details in a sentence reach your configured cloud model when cloud cleanup runs.")
+                Text("Say \"add my email here\" to insert your saved email, or say \"my email\" inside a sentence. Fields you add work the same way, so one named GitHub answers to \"my GitHub\". The description tells the model what the value is. Empty details stay as spoken. Details stay on this Mac, and a detail goes to your cloud model only when you say it, unless you tick Always tell the model. Then it goes with every request, so the model can spell it and know what you mean.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section {
@@ -379,6 +414,11 @@ struct SettingsView: View {
                         .labelsHidden()
                         .textFieldStyle(.roundedBorder)
                         .onSubmit(addWord)
+                    TextField("Meaning", text: $newWordMeaning, prompt: Text("Meaning (optional)"))
+                        .labelsHidden()
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit(addWord)
+                        .help("What the word means. Saved only when you add a single word.")
                     Button("Add", action: addWord)
                         .disabled(newWord.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
@@ -397,12 +437,29 @@ struct SettingsView: View {
                             .labelsHidden()
                             .textFieldStyle(.roundedBorder)
                     }
-                    FlowLayout(spacing: 6) {
-                        ForEach(filteredWords, id: \.self) { word in
-                            WordChip(word: word) { env.lexicon.removeWord(word) }
+                    ForEach(filteredWords, id: \.self) { word in
+                        HStack(spacing: 10) {
+                            Text(word)
+                                .lineLimit(1)
+                                .frame(width: 150, alignment: .leading)
+                                .help(word)
+                            TextField("Meaning", text: Binding(
+                                get: { env.lexicon.description(for: word) },
+                                set: { env.lexicon.setDescription($0, for: word) }
+                            ), prompt: Text("Meaning"))
+                                .labelsHidden()
+                                .foregroundStyle(.secondary)
+                                .accessibilityLabel("Meaning of \(word)")
+                            Button {
+                                env.lexicon.removeWord(word)
+                            } label: {
+                                Image(systemName: "minus.circle")
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Remove \(word)")
+                            .accessibilityLabel("Remove \(word)")
                         }
                     }
-                    .padding(.vertical, 4)
                 }
             } header: {
                 HStack {
@@ -417,7 +474,7 @@ struct SettingsView: View {
                 .buttonStyle(.borderless)
                 .font(.callout)
             } footer: {
-                Text("Given to the recogniser and to the cleanup pass.")
+                Text("Given to the recogniser and to the cleanup pass. A meaning goes to the model with the word whenever you say it, as \"CCADB (Mozilla's Common CA Database)\". Leave it empty for names and terms that need no explanation.")
                     .font(.caption).foregroundStyle(.secondary)
             }
 
@@ -515,7 +572,17 @@ struct SettingsView: View {
     private func addWord() {
         // The field doubles as a paste target, so always go through the bulk path.
         let added = env.lexicon.addWords(newWord)
-        note(added == 0 ? "Already in the dictionary." : "Added \(added) word\(added == 1 ? "" : "s").")
+        // A meaning belongs to one word. A pasted list has no single word to attach it to.
+        let word = newWord.trimmingCharacters(in: .whitespacesAndNewlines)
+        let single = !word.isEmpty && !word.contains(where: { "\n\r,;\t".contains($0) })
+        let meaning = newWordMeaning.trimmingCharacters(in: .whitespacesAndNewlines)
+        if single, !meaning.isEmpty, env.lexicon.contains(word) {
+            env.lexicon.setDescription(meaning, for: word)
+            note(added == 0 ? "Saved the meaning of \(word)." : "Added \(word) with its meaning.")
+            newWordMeaning = ""
+        } else {
+            note(added == 0 ? "Already in the dictionary." : "Added \(added) word\(added == 1 ? "" : "s").")
+        }
         newWord = ""
     }
 
@@ -647,26 +714,4 @@ struct SettingsView: View {
 }
 
 /// A removable word in the vocabulary list.
-private struct WordChip: View {
-    var word: String
-    var remove: () -> Void
-    @State private var hovering = false
 
-    var body: some View {
-        HStack(spacing: 4) {
-            Text(word).font(.callout)
-            Button(action: remove) {
-                Image(systemName: "xmark.circle.fill")
-            }
-            .buttonStyle(.borderless)
-            .foregroundStyle(hovering ? .secondary : .tertiary)
-            .help("Remove \(word)")
-            .accessibilityLabel("Remove \(word)")
-        }
-        .padding(.leading, 9)
-        .padding(.trailing, 5)
-        .padding(.vertical, 3)
-        .background(hovering ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.quaternary.opacity(0.6)), in: Capsule())
-        .onHover { hovering = $0 }
-    }
-}

@@ -22,6 +22,13 @@ struct Decision: Sendable {
 }
 
 /// Everything the model is told before it sees a word you said.
+/// A custom personal detail as the prompt names it.
+struct SpeakerDetail: Sendable, Equatable {
+    var name: String
+    var description = ""
+    var value: String
+}
+
 struct CleanupContext: Sendable {
     var appName: String
     var bundleID: String
@@ -31,6 +38,10 @@ struct CleanupContext: Sendable {
     var transcriptionLanguage: TranscriptionLanguage
     var vocabulary: [String] = []
     var corrections: [(said: String, meant: String)] = []
+    /// Descriptions of custom words, keyed by the word in lowercase.
+    var termDescriptions: [String: String] = [:]
+    /// Custom personal details marked "Always tell the model".
+    var speakerDetails: [SpeakerDetail] = []
     var substitutions = DictationSubstitutions()
     /// The last thing Flow typed, so "scratch that" has a referent.
     var lastInsert: String?
@@ -95,16 +106,16 @@ actor CleanupService {
     private lazy var decisionSchema: GenerationSchema? = {
         let mode = DynamicGenerationSchema(
             name: "mode",
-            description: "insert for ordinary speech, replace/delete for corrections, format for layout commands",
+            description: PromptLibrary.render("apple-intelligence-cleanup.schema.mode"),
             anyOf: DictationMode.allCases.map(\.rawValue)
         )
         let root = DynamicGenerationSchema(name: "Decision", properties: [
             .init(name: "mode", schema: mode),
             .init(name: "text",
-                  description: "the cleaned text to insert, or the replacement text",
+                  description: PromptLibrary.render("apple-intelligence-cleanup.schema.text"),
                   schema: DynamicGenerationSchema(type: String.self)),
             .init(name: "target",
-                  description: "the words being replaced or deleted, if any",
+                  description: PromptLibrary.render("apple-intelligence-cleanup.schema.target"),
                   schema: DynamicGenerationSchema(type: String.self),
                   isOptional: true),
         ])
@@ -113,9 +124,9 @@ actor CleanupService {
 
     private lazy var summarySchema: GenerationSchema? = {
         let root = DynamicGenerationSchema(name: "NoteSummary", properties: [
-            .init(name: "title", description: "six words or fewer",
+            .init(name: "title", description: PromptLibrary.render("note-summary.schema.title"),
                   schema: DynamicGenerationSchema(type: String.self)),
-            .init(name: "summary", description: "two or three sentences",
+            .init(name: "summary", description: PromptLibrary.render("note-summary.schema.summary"),
                   schema: DynamicGenerationSchema(type: String.self)),
         ])
         return try? GenerationSchema(root: root, dependencies: [])
@@ -164,9 +175,7 @@ actor CleanupService {
 
         var context = context
         context.spokenCommand = spokenCommand
-        let session = LanguageModelSession(model: model) {
-            instructions(for: context)
-        }
+        let session = LanguageModelSession(model: model, instructions: Self.instructions(for: context))
 
         do {
             let stream = session.streamResponse(
@@ -205,64 +214,16 @@ actor CleanupService {
 
     /// The model sees the whole thought after recording ends. That lets it clean false
     /// starts and repairs that a streaming word-by-word pass cannot understand.
-    @InstructionsBuilder
-    private func instructions(for context: CleanupContext) -> Instructions {
-        DictationCleanupPolicy.instruction
-
-        if context.transcriptionLanguage == .hinglish {
-            "The speaker may mix Hindi and English. Write all Hindi in natural Roman-script Hinglish, never Devanagari."
-            "Transliterate Hindi; do not translate it into English. Keep words already spoken in English unchanged."
-            "Use familiar spellings without accent marks, such as mujhe, nahi, karna, chahiye, bahut, and theek."
-            "Example: मुझे कल deploy करना है. Clean: Mujhe kal deploy karna hai."
-            "Example: यार this API बहुत slow है. Clean: Yaar, this API bahut slow hai."
-        }
-
-        "Examples of cleanup:"
-        "Raw: um I think I think we should ship on Thursday, sorry, Friday. Clean: I think we should ship on Friday."
-        "Raw: there are three things first fix login second add tests and third update the docs. Clean: There are three things:\n1. Fix login.\n2. Add tests.\n3. Update the docs."
-        "Raw: the API is broken, no, that's not right, the API is slow when the cache is cold. Clean: The API is slow when the cache is cold."
-
-        "The text is being typed into \(context.appName), \(context.appDescription), in a \(context.axRole) field."
-        switch context.writingContext {
-        case .chat:
-            "Match casual conversation. Keep contractions and the speaker's relaxed tone. Prefer a natural message over polished corporate prose."
-        case .email:
-            "Use polished, complete sentences and sensible paragraphs. Keep the speaker's level of warmth and formality."
-        case .development:
-            "This is developer writing. Preserve technical detail and use conventional casing for technical terms, commands, identifiers, acronyms, and product names."
-            "Do not turn prose into source code or add Markdown unless the speaker asks for it."
-        case .document:
-            "Use clear prose, paragraphs, and lists where the spoken structure calls for them."
-        case .browser, .general:
-            "Match the speaker's tone. Do not make the writing more formal than the speech."
-        }
-
-        // Only a command needs a referent. Shown to ordinary speech, the model starts
-        // echoing the previous dictation back instead of cleaning the new one.
-        if let last = context.lastInsert, !last.isEmpty, context.spokenCommand {
-            "The last text you inserted was: \(last.suffix(3000))"
-        }
-
-        if !context.vocabulary.isEmpty {
-            "These are correctly spelled names or terms relevant here: \(context.vocabulary.joined(separator: ", "))."
-            "If the transcript has a near miss of one of them, use the correct spelling."
-        }
-
-        if !context.corrections.isEmpty {
-            let pairs = context.corrections.map { "\"\($0.said)\" means \"\($0.meant)\"" }
-            "Past corrections from this user: \(pairs.joined(separator: "; "))."
-        }
-
-        "A repeated or replaced fragment may disappear. Every distinct intended idea must remain."
-        "If you are unsure whether something is a command, it is not one. Use mode=insert."
-
-        "Classify the speech before you clean it."
-        "mode=insert for ordinary speech. This is almost always the answer."
-        "mode=delete only when they directly tell you to scratch, undo, or delete what was just said; put the words to remove in target."
-        "mode=replace for direct word replacements or a follow-up request to rewrite, shorten, or change the tone of your last insertion. Put the exact previous words in target and the revised text in text. Never target text you did not insert."
-        "A sentence that merely talks about changing, fixing, or redoing something is ordinary speech, not a command."
-        "mode=format for new line, new paragraph, all caps, or raw mode."
-        "For mode=insert, text is the cleaned transcript in full and nothing else."
+    /// The text lives in `Prompts/apple-intelligence-cleanup.md`.
+    static func instructions(for context: CleanupContext) -> String {
+        PromptLibrary.render("apple-intelligence-cleanup.prompt", [
+            "app_name": context.appName,
+            "app_description": context.appDescription,
+            "field_role": context.axRole,
+            "cleanup_rules": DictationCleanupPolicy.instruction,
+            "style": PromptLibrary.render("apple-intelligence-cleanup.style." + context.writingContext.promptStyle),
+            "context": DictationCleanupPolicy.contextBlocks(for: context, includeLastInsert: true),
+        ])
     }
 
     /// Words that carry no meaning, so removing them is cleanup rather than loss.
@@ -491,12 +452,7 @@ actor CleanupService {
         guard case .available = model.availability, let schema = summarySchema else {
             throw CleanupError.unavailable
         }
-        let session = LanguageModelSession(model: model) {
-            "You summarise a personal voice note."
-            "Be concrete. Use the note's own words where you can."
-            "Never invent detail that is not in the note."
-            "Never use an em dash. Use commas or new sentences. Use straight quotation marks."
-        }
+        let session = LanguageModelSession(model: model, instructions: PromptLibrary.render("note-summary.prompt"))
         let response = try await session.respond(
             to: String(text.prefix(4000)),
             schema: schema,

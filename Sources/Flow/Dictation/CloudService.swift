@@ -244,9 +244,7 @@ actor CloudService {
         switch account.api {
         case .openAI:
             if route.model.audioInput == .multimodal {
-                let instruction = language == .hinglish
-                    ? "Transcribe this speech exactly. Keep Hindi and English words as spoken. Return only the transcript."
-                    : "Transcribe this speech exactly. Return only the transcript."
+                let instruction = PromptLibrary.render(language == .hinglish ? "cloud-transcription.hinglish" : "cloud-transcription.plain")
                 let payload = Self.audioChatPayload(audio: audio, modelID: route.model.modelID, instruction: instruction)
                 return try chatText(try await sendJSON(account, route.model, path: "chat/completions", payload: payload, scope: scope))
             }
@@ -265,9 +263,7 @@ actor CloudService {
             return try nonempty(json["text"] as? String)
         case .google:
             guard ((audio.count + 2) / 3) * 4 < 19_000_000 else { throw CloudError.audioTooLarge }
-            let prompt = language == .hinglish
-                ? "Transcribe this speech exactly. Keep Hindi and English words as spoken. Return only the transcript."
-                : "Transcribe this speech exactly. Return only the transcript."
+            let prompt = PromptLibrary.render(language == .hinglish ? "cloud-transcription.hinglish" : "cloud-transcription.plain")
             let payload: [String: Any] = ["contents": [["parts": [
                 ["text": prompt],
                 ["inlineData": ["mimeType": "audio/wav", "data": audio.base64EncodedString()]],
@@ -281,8 +277,7 @@ actor CloudService {
 
     private func onePass(_ audio: Data, route: CloudRoute, context: CleanupContext, scope: Scope, preview: @escaping Preview) async throws -> String {
         let account = route.provider
-        let instruction = "Listen to this recording and return the finished written dictation. Do the transcription and cleanup in this one response. "
-            + refinementInstruction(context)
+        let instruction = Self.refinementInstruction(context, audio: true)
         switch account.api {
         case .openAI:
             let payload = Self.audioChatPayload(audio: audio, modelID: route.model.modelID, instruction: instruction)
@@ -308,7 +303,7 @@ actor CloudService {
 
     private func refine(_ text: String, route: CloudRoute, context: CleanupContext, scope: Scope, preview: @escaping Preview) async throws -> String {
         let account = route.provider
-        let instruction = refinementInstruction(context)
+        let instruction = Self.refinementInstruction(context)
         switch account.api {
         case .openAI:
             let payload: [String: Any] = ["model": route.model.modelID, "messages": [
@@ -332,24 +327,20 @@ actor CloudService {
         "models/\(route.model.modelID):generateContent"
     }
 
-    private func refinementInstruction(_ context: CleanupContext) -> String {
-        var instruction = DictationCleanupPolicy.instruction
-            + "\nThe destination is \(context.appName). \(context.appDescription)."
-        switch context.writingContext {
-        case .chat: instruction += " Keep casual language and contractions."
-        case .email: instruction += " Use complete sentences and readable paragraphs without adding a greeting or signature."
-        case .development: instruction += " Preserve technical names, identifiers, commands, and conventional capitalization. Do not turn prose into code."
-        case .document: instruction += " Preserve the document's paragraphs and list structure."
-        case .browser, .general: instruction += " Match the speaker's tone."
-        }
-        if context.transcriptionLanguage == .hinglish {
-            instruction += " Write Hindi words in Roman-script Hinglish. Keep English words in English."
-        }
-        if !context.vocabulary.isEmpty { instruction += " Correct terms: \(context.vocabulary.joined(separator: ", "))." }
-        if !context.corrections.isEmpty {
-            instruction += " Corrections: \(context.corrections.map { "\($0.said) means \($0.meant)" }.joined(separator: "; "))."
-        }
-        return instruction
+    /// The text lives in `Prompts/cloud-cleanup.md`. With `audio`, the model gets the
+    /// recording and transcribes and cleans it in one response.
+    static func refinementInstruction(_ context: CleanupContext, audio: Bool = false) -> String {
+        let body = PromptLibrary.render("cloud-cleanup.body", [
+            "app_name": context.appName,
+            "cleanup_rules": DictationCleanupPolicy.instruction,
+            "style": PromptLibrary.render("cloud-cleanup.style." + context.writingContext.promptStyle),
+            "context": DictationCleanupPolicy.contextBlocks(for: context, includeLastInsert: false),
+        ])
+        return PromptLibrary.render(audio ? "cloud-cleanup.audio" : "cloud-cleanup.transcript", [
+            "app_name": context.appName,
+            "app_description": context.appDescription,
+            "body": body,
+        ])
     }
 
     /// Adds the model's reasoning setting in the shape its API expects.

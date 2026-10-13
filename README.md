@@ -239,6 +239,23 @@ explicit replacement for other pronunciations or names split into multiple words
 Details stay in local preferences. Expanded details in a sentence become part of
 the input when cloud cleanup runs. Apple raw transcription stays unchanged in history.
 
+Add a field adds your own detail with a name, a description, and a value. A field
+named GitHub answers to "my GitHub" exactly like the built-in ones, and a name that
+already starts with "my" is not doubled. A field reaches a model only when you say
+it, unless you tick Always tell the model. Then every local and cloud cleanup
+request carries a line such as "About the speaker: their GitHub (personal profile
+link) is github.com/you", with an instruction to use it for spelling and references
+and never to add it unprompted. Each custom word has its own Meaning box, and the
+add row takes a meaning for a single new word. A word with a meaning reaches the
+prompt as "CCADB (Mozilla's Common CA Database)" when it appears in a dictation. `flowclone://vocabulary` opens this page.
+
+Every prompt Flow sends lives as Markdown in [`Prompts/`](Prompts/README.md), one
+file per job, such as `cloud-cleanup.md` and `apple-intelligence-cleanup.md`.
+`{placeholder}` slots are filled at run time like a Python format string. Edit a
+file and rebuild to change what the models see, and run `Flow --print-prompts` to
+read the result. The self-check fails if a prompt is missing, unused, or has a slot
+the code does not fill.
+
 If no editable text field has focus, Flow leaves the finished text on the clipboard
 and says "Copied to clipboard" in the panel. It does not send a paste shortcut to the
 frontmost window. Zed is the exception: its GPU-drawn editor exposes no text

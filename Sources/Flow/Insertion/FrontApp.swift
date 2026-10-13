@@ -19,6 +19,18 @@ enum WritingContext: String, Sendable {
         }
     }
 
+    /// The `style.*` section in `Prompts/cloud-cleanup.md` and
+    /// `Prompts/apple-intelligence-cleanup.md`.
+    var promptStyle: String {
+        switch self {
+        case .chat: "chat"
+        case .email: "email"
+        case .development: "development"
+        case .document: "document"
+        case .browser, .general: "general"
+        }
+    }
+
     /// Contextual strings bias recognition toward words the speech model often hears
     /// phonetically. Cleanup gets the same vocabulary so it can repair near misses.
     var recognitionHints: [String] {

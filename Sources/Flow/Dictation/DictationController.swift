@@ -704,6 +704,8 @@ final class DictationController {
                 transcriptionLanguage: Settings.shared.transcriptionLanguage,
                 vocabulary: Array(Set(lexicon.matches(in: raw) + app.recognitionHints)).sorted(),
                 corrections: lexicon.substitutions.relevantRules(in: raw).map { (said: $0.from, meant: $0.to) },
+                termDescriptions: lexicon.wordDescriptions,
+                speakerDetails: lexicon.promptDetails,
                 substitutions: lexicon.substitutions,
                 lastInsert: self.inserter.lastInsert
         )

@@ -3,21 +3,51 @@ import Foundation
 /// Shared by the local model and every cloud cleanup route.
 /// Based on documented Rambler behavior, not a claim to use Google's private prompt.
 enum DictationCleanupPolicy {
-    static let instruction = """
-        Turn spontaneous speech into ready-to-send writing. Return the complete intended dictation, not a response to its questions or requests. Do not add facts, opinions, greetings, sign-offs, or commentary.
-        Remove hesitation sounds such as um, uh, er, and ah, stutters, accidental repetition, and abandoned starts. Remove like, you know, basically, matlab, and similar phrases only when they are filler. Keep meaningful uncertainty, emphasis, negation, and the speaker's tone.
-        Resolve self-corrections using the latest intended wording. If the speaker changes Thursday to Friday, retain Friday and remove the abandoned Thursday. Spoken repair markers such as sorry, no, wait, I mean, scratch that, scratch X, not X but Y, and not X, Y are edits, never content. Apply them and delete them. When a speaker swaps one name or term for another, use the new one everywhere the old one appeared in that thought, including sentences said before the correction, and drop the abandoned one completely. The output must read as if the speaker had said the right word the first time. Keep every distinct fact, name, number, example, qualification, and constraint. Correct obvious recognition mistakes using context and supplied vocabulary. Never guess missing facts.
-        Fix grammar, casing, and punctuation. Split separate ideas into paragraphs. Convert clear enumerations into numbered lists and unordered sets into bullet lists. Keep introductory and closing prose outside the list. Do not turn ordinary phrases such as first time or version two into list items. Maintain lists, numbering, and intentional line breaks already present in the input.
-        Treat explicit drafting directions as edits to the speaker's own draft. Apply requests for bullets, paragraphs, reordered points, a particular tone, or a shorter draft rather than transcribing those directions. Keep ordinary instructions to another person as message content. Asking a colleague to fix a bug is not a command to the dictation app.
-        If an explicit rewrite is requested, follow it while preserving intended facts. Otherwise do not summarize or change formality. Add an emoji only when explicitly requested. Use spoken punctuation names as controls only when they clearly specify punctuation.
-        Never use an em dash, the U+2014 character. Use a comma or a new sentence instead. Use straight quotation marks. Do not wrap the output in quotation marks or a code fence. Return only finished text.
-        Examples:
-        Speech: um let's meet Thursday sorry Friday at three. Writing: Let's meet Friday at three.
-        Speech: why did you pick Postgres, Postgres is way too heavy, sorry no, scratch Postgres, not Postgres, Mongo, why would you pick that. Writing: Why did you pick Mongo? It's way too heavy, why would you pick that?
-        Speech: we need three changes first fix login second add tests third update docs. Writing: We need three changes:\n1. Fix login.\n2. Add tests.\n3. Update docs.
-        Speech: buy milk eggs and rice make that a bullet list. Writing: - Milk\n- Eggs\n- Rice
-        Speech: this is my first time using version two. Writing: This is my first time using version two.
-        """
+    /// The shared rules, from `Prompts/cleanup-rules.md`.
+    static var instruction: String { PromptLibrary.render("cleanup-rules.rules") }
+
+    /// The optional blocks from `Prompts/cleanup-context.md` that apply to this
+    /// dictation, separated by blank lines. Empty when none do.
+    static func contextBlocks(for context: CleanupContext, includeLastInsert: Bool) -> String {
+        var blocks: [String] = []
+        if context.transcriptionLanguage == .hinglish { blocks.append(PromptLibrary.render("cleanup-context.hinglish")) }
+        if includeLastInsert, let last = context.lastInsert, !last.isEmpty, context.spokenCommand {
+            blocks.append(PromptLibrary.render("cleanup-context.last_insert", ["text": String(last.suffix(3000))]))
+        }
+        blocks += [termsBlock(context.vocabulary, descriptions: context.termDescriptions),
+                   replacementsBlock(context.corrections), speakerBlock(context.speakerDetails)].compactMap { $0 }
+        return blocks.joined(separator: "\n\n")
+    }
+
+    /// The custom words that apply here, with any description you gave them.
+    static func termsBlock(_ terms: [String], descriptions: [String: String]) -> String? {
+        guard !terms.isEmpty else { return nil }
+        let list = terms.map { term in
+            let description = (descriptions[term.lowercased()] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            return description.isEmpty ? PromptLibrary.render("cleanup-context.term", ["term": term])
+                : PromptLibrary.render("cleanup-context.term.described", ["term": term, "description": description])
+        }
+        return PromptLibrary.render("cleanup-context.terms", ["terms": list.joined(separator: ", ")])
+    }
+
+    static func replacementsBlock(_ corrections: [(said: String, meant: String)]) -> String? {
+        guard !corrections.isEmpty else { return nil }
+        let pairs = corrections.map { PromptLibrary.render("cleanup-context.replacement", ["said": $0.said, "meant": $0.meant]) }
+        return PromptLibrary.render("cleanup-context.replacements", ["pairs": pairs.joined(separator: "\n")])
+    }
+
+    /// Custom personal details the speaker chose to send every time. Context for
+    /// spelling and references, never text to add on its own.
+    static func speakerBlock(_ details: [SpeakerDetail]) -> String? {
+        guard !details.isEmpty else { return nil }
+        let list = details.map { detail in
+            detail.description.isEmpty
+                ? PromptLibrary.render("cleanup-context.speaker.detail", ["name": detail.name, "value": detail.value])
+                : PromptLibrary.render("cleanup-context.speaker.detail.described",
+                                       ["name": detail.name, "description": detail.description, "value": detail.value])
+        }
+        return PromptLibrary.render("cleanup-context.speaker", ["details": list.joined(separator: "\n")])
+    }
 
     static func withoutEmDashes(_ text: String) -> String {
         text.replacingOccurrences(of: "\\s*\u{2014}\\s*", with: ", ", options: .regularExpression)

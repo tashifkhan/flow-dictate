@@ -230,7 +230,8 @@ final class AppEnvironment {
 
     // MARK: - URL scheme
 
-    /// `flowclone://toggle`, `flowclone://history`, `flowclone://note`.
+    /// `flowclone://toggle`, `flowclone://history`, `flowclone://note`, `flowclone://models`,
+    /// `flowclone://vocabulary`.
     func handle(_ url: URL) {
         guard url.scheme == "flowclone" else { return }
         let action = url.host ?? url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
@@ -242,6 +243,9 @@ final class AppEnvironment {
             openMainWindow()
         case "models":
             openSettingsPane = .models
+            openMainWindow()
+        case "vocabulary":
+            openSettingsPane = .vocabulary
             openMainWindow()
         case "note":
             let note = library.newNote()

@@ -13,6 +13,59 @@ final class Lexicon {
         var phone = ""
         var company = ""
         var address = ""
+        var custom: [CustomDetail] = []
+
+        init() {}
+
+        // Details saved before custom fields existed have no "custom" key.
+        init(from decoder: Decoder) throws {
+            let values = try decoder.container(keyedBy: CodingKeys.self)
+            name = try values.decodeIfPresent(String.self, forKey: .name) ?? ""
+            email = try values.decodeIfPresent(String.self, forKey: .email) ?? ""
+            phone = try values.decodeIfPresent(String.self, forKey: .phone) ?? ""
+            company = try values.decodeIfPresent(String.self, forKey: .company) ?? ""
+            address = try values.decodeIfPresent(String.self, forKey: .address) ?? ""
+            custom = try values.decodeIfPresent([CustomDetail].self, forKey: .custom) ?? []
+        }
+    }
+
+    /// A detail you name yourself, such as "GitHub" or "work email". Saying
+    /// "my GitHub" inserts its value.
+    struct CustomDetail: Codable, Equatable, Hashable, Identifiable, Sendable {
+        var id = UUID()
+        var label = ""
+        /// What the value is, for the model: "personal profile link".
+        var description = ""
+        var value = ""
+        /// Sent as context with every cleanup request, not only when you say it.
+        var alwaysInPrompt = false
+
+        init(label: String = "", description: String = "", value: String = "", alwaysInPrompt: Bool = false) {
+            self.label = label
+            self.description = description
+            self.value = value
+            self.alwaysInPrompt = alwaysInPrompt
+        }
+
+        init(from decoder: Decoder) throws {
+            let values = try decoder.container(keyedBy: CodingKeys.self)
+            id = try values.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+            label = try values.decodeIfPresent(String.self, forKey: .label) ?? ""
+            description = try values.decodeIfPresent(String.self, forKey: .description) ?? ""
+            value = try values.decodeIfPresent(String.self, forKey: .value) ?? ""
+            alwaysInPrompt = try values.decodeIfPresent(Bool.self, forKey: .alwaysInPrompt) ?? false
+        }
+
+        /// "My GitHub" and "GitHub" name the same field.
+        var spokenLabel: String {
+            var label = self.label.trimmingCharacters(in: .whitespacesAndNewlines)
+            if label.lowercased().hasPrefix("my ") { label = String(label.dropFirst(3)).trimmingCharacters(in: .whitespaces) }
+            return label
+        }
+
+        var isComplete: Bool {
+            !spokenLabel.isEmpty && !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
     }
 
     var personalDetails = PersonalDetails() {
@@ -32,10 +85,14 @@ final class Lexicon {
 
     private(set) var words: [String] = []
     private(set) var corrections: [Correction] = []
+    /// What a custom word means, keyed by the word in lowercase. Kept apart from
+    /// `words` so the saved word list and speech-model training stay plain strings.
+    private(set) var wordDescriptions: [String: String] = [:]
 
     private let defaults: UserDefaults
     private static let wordsKey = "lexiconWords"
     private static let correctionsKey = "lexiconCorrections"
+    private static let wordDescriptionsKey = "lexiconWordDescriptions"
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -44,6 +101,7 @@ final class Lexicon {
             personalDetails = details
         }
         words = defaults.stringArray(forKey: Self.wordsKey) ?? []
+        wordDescriptions = defaults.dictionary(forKey: Self.wordDescriptionsKey) as? [String: String] ?? [:]
         if let data = defaults.data(forKey: Self.correctionsKey),
            let decoded = try? JSONDecoder().decode([Correction].self, from: data) {
             corrections = decoded
@@ -85,6 +143,19 @@ final class Lexicon {
     func removeWord(_ word: String) {
         words.removeAll { $0 == word }
         persistWords()
+        if !contains(word) { setDescription("", for: word) }
+    }
+
+    func description(for word: String) -> String { wordDescriptions[word.lowercased()] ?? "" }
+
+    /// Saved as typed, so a live text field keeps the space you just typed. The prompt
+    /// trims it.
+    func setDescription(_ description: String, for word: String) {
+        let key = word.lowercased()
+        let stored = description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : description
+        guard wordDescriptions[key] != stored else { return }
+        wordDescriptions[key] = stored
+        defaults.set(wordDescriptions, forKey: Self.wordDescriptionsKey)
     }
 
     func record(from: String, to: String) {
@@ -114,7 +185,19 @@ final class Lexicon {
         ] where !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             rules += aliases.map { .init(from: $0, to: value.trimmingCharacters(in: .whitespacesAndNewlines), personal: true) }
         }
+        for detail in details.custom where detail.isComplete {
+            rules.append(.init(from: "my " + detail.spokenLabel.lowercased(),
+                               to: detail.value.trimmingCharacters(in: .whitespacesAndNewlines), personal: true))
+        }
         return DictationSubstitutions(rules: rules, vocabulary: recognitionWords)
+    }
+
+    /// Custom details you chose to send with every request, as the model reads them.
+    var promptDetails: [SpeakerDetail] {
+        personalDetails.custom.filter { $0.alwaysInPrompt && $0.isComplete }.map {
+            SpeakerDetail(name: $0.spokenLabel, description: $0.description.trimmingCharacters(in: .whitespacesAndNewlines),
+                          value: $0.value.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
     }
 
     var recognitionWords: [String] {
