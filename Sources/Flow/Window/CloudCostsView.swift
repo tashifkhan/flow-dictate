@@ -38,7 +38,27 @@ struct CloudCostSection: View {
         var id: String { rawValue }
     }
 
-    private var summary: CloudCostSummary { CloudCostSummary(requests: requests) }
+    private let summary: CloudCostSummary
+    private let previous: [CloudRequestRecord]?
+    private let seriesOrder: [String]
+    private let seriesIndices: [String: Int]
+    private let bars: [Bar]
+    private let unsortedModelRows: [ModelRow]
+
+    init(requests: [CloudRequestRecord], allRequests: [CloudRequestRecord], range: StatsRange) {
+        self.requests = requests
+        self.allRequests = allRequests
+        self.range = range
+        summary = CloudCostSummary(requests: requests)
+        previous = range.previousWindow().map { window in
+            allRequests.filter { $0.isInference && $0.startedAt >= window.start && $0.startedAt < window.end }
+        }
+        let order = Self.modelOrder(allRequests)
+        seriesOrder = order
+        seriesIndices = Dictionary(uniqueKeysWithValues: order.enumerated().map { ($0.element, $0.offset) })
+        bars = Self.makeBars(requests, component: range.bucket, order: order)
+        unsortedModelRows = Self.makeModelRows(requests)
+    }
     private var component: Calendar.Component { range.bucket }
 
     var body: some View {
@@ -68,20 +88,15 @@ struct CloudCostSection: View {
 
     // MARK: Headline numbers
 
-    private var previous: [CloudRequestRecord]? {
-        guard let window = range.previousWindow() else { return nil }
-        return allRequests.filter { $0.isInference && $0.startedAt >= window.start && $0.startedAt < window.end }
-    }
-
     private var kpis: some View {
         let finished = requests.filter { $0.status != .running }
         let succeeded = finished.filter { $0.status == .succeeded }
         let latencies = succeeded.compactMap(\.elapsed)
         let before = previous.map { CloudCostSummary(requests: $0) }
         let previousLatency = previous.flatMap { calls in
-            median(calls.filter { $0.status == .succeeded }.compactMap(\.elapsed))
+            Self.median(calls.filter { $0.status == .succeeded }.compactMap(\.elapsed))
         }
-        let latency = median(latencies)
+        let latency = Self.median(latencies)
         return LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 12)], spacing: 12) {
             StatCard(title: "Estimated spend", value: Fmt.money(summary.knownCost),
                      delta: change(summary.knownCost, before?.knownCost), higherIsBetter: false,
@@ -103,7 +118,7 @@ struct CloudCostSection: View {
         return (now - before) / before
     }
 
-    private func median(_ values: [Double]) -> Double? {
+    private static func median(_ values: [Double]) -> Double? {
         guard !values.isEmpty else { return nil }
         let sorted = values.sorted()
         let middle = sorted.count / 2
@@ -113,13 +128,11 @@ struct CloudCostSection: View {
     // MARK: Series identity
 
     /// Models in order of first use, so colours follow the model, never its rank.
-    private var seriesOrder: [String] {
-        var seen: [String] = []
-        for request in allRequests.filter(\.isInference).sorted(by: { $0.startedAt < $1.startedAt }) {
-            let key = Self.seriesKey(request)
-            if !seen.contains(key) { seen.append(key) }
+    static func modelOrder(_ requests: [CloudRequestRecord]) -> [String] {
+        var seen = Set<String>()
+        return requests.filter(\.isInference).sorted { $0.startedAt < $1.startedAt }.compactMap { request in
+            seen.insert(request.modelID).inserted ? request.modelID : nil
         }
-        return seen
     }
 
     static func seriesKey(_ request: CloudRequestRecord) -> String { request.modelID }
@@ -127,13 +140,8 @@ struct CloudCostSection: View {
     /// Slots run out before models do; the rest share one neutral "Other".
     private var colorSlots: Int { VizPalette.seriesCount - 1 }
 
-    private func seriesName(_ key: String) -> String {
-        let index = seriesOrder.firstIndex(of: key) ?? .max
-        return index < colorSlots ? key : "Other"
-    }
-
     private func color(for key: String) -> Color {
-        guard let index = seriesOrder.firstIndex(of: key), index < colorSlots else { return VizPalette.other }
+        guard let index = seriesIndices[key], index < colorSlots else { return VizPalette.other }
         return VizPalette.series(index, scheme: scheme)
     }
 
@@ -147,17 +155,19 @@ struct CloudCostSection: View {
         var id: String { "\(bucket.timeIntervalSince1970)-\(series)" }
     }
 
-    private var bars: [Bar] {
+    private static func makeBars(_ requests: [CloudRequestRecord], component: Calendar.Component, order: [String]) -> [Bar] {
         let calendar = Calendar.current
+        let indices = Dictionary(uniqueKeysWithValues: order.enumerated().map { ($0.element, $0.offset) })
         var totals: [String: Bar] = [:]
         for request in requests {
             guard let bucket = calendar.dateInterval(of: component, for: request.startedAt)?.start else { continue }
-            let series = seriesName(Self.seriesKey(request))
+            let index = indices[request.modelID] ?? .max
+            let series = index < VizPalette.seriesCount - 1 ? request.modelID : "Other"
             let id = "\(bucket.timeIntervalSince1970)-\(series)"
             totals[id, default: Bar(bucket: bucket, series: series, spend: 0, calls: 0)].spend += request.estimatedCost ?? 0
             totals[id]?.calls += 1
         }
-        return totals.values.sorted { $0.bucket < $1.bucket }
+        return totals.values.sorted { $0.bucket == $1.bucket ? $0.series < $1.series : $0.bucket < $1.bucket }
     }
 
     private var domain: ClosedRange<Date> {
@@ -213,6 +223,10 @@ struct CloudCostSection: View {
                         .foregroundStyle(.secondary.opacity(0.25))
                         .lineStyle(StrokeStyle(lineWidth: max(barWidth + 6, 8)))
                         .zIndex(-1)
+                    // Keep the highlight behind the bars and its tooltip above them.
+                    RuleMark(x: .value("Date", hoveredBucket, unit: component))
+                        .foregroundStyle(.clear)
+                        .zIndex(1)
                         .annotation(position: .top, spacing: 4,
                                     overflowResolution: .init(x: .fit(to: .chart), y: .fit(to: .chart))) {
                             tooltip(for: hoveredBucket)
@@ -290,11 +304,13 @@ struct CloudCostSection: View {
         var speed: Double
     }
 
-    private var modelRows: [ModelRow] {
+    private static func makeModelRows(_ requests: [CloudRequestRecord]) -> [ModelRow] {
         Dictionary(grouping: requests) { "\($0.providerID.uuidString)|\($0.modelID)" }.map { id, calls in
             let summary = CloudCostSummary(requests: calls)
             let succeeded = calls.filter { $0.status == .succeeded }
-            let speeds = succeeded.compactMap(\.tokensPerSecond)
+            let timed = succeeded.filter { $0.wordsPerMinute != nil }
+            let seconds = timed.compactMap(\.elapsed).reduce(0, +)
+            let words = timed.compactMap(\.outputWords).reduce(0, +)
             return ModelRow(
                 id: id,
                 provider: calls.first?.providerName ?? "Provider",
@@ -303,17 +319,16 @@ struct CloudCostSection: View {
                 failures: calls.filter { $0.status == .failed || $0.status == .interrupted }.count,
                 spend: summary.knownCost,
                 unknown: summary.unpricedCalls,
-                latency: median(succeeded.compactMap(\.elapsed)) ?? .infinity,
-                firstToken: median(succeeded.compactMap(\.firstTokenLatency)) ?? .infinity,
-                speed: speeds.isEmpty ? 0 : speeds.reduce(0, +) / Double(speeds.count)
+                latency: Self.median(succeeded.compactMap(\.elapsed)) ?? .infinity,
+                firstToken: Self.median(succeeded.compactMap(\.firstTokenLatency)) ?? .infinity,
+                speed: seconds > 0 ? Double(words) * 60 / seconds : -1
             )
         }
-        .sorted(using: modelSort)
     }
 
     private var modelCard: some View {
-        let rows = modelRows
-        return SectionCard(title: "By model", subtitle: "Click a column to sort. Latency columns are medians over successful requests.") {
+        let rows = unsortedModelRows.sorted(using: modelSort)
+        return SectionCard(title: "By model", subtitle: "Latency columns are medians. Speed includes the full request, including the initial wait.") {
             Table(rows, sortOrder: $modelSort) {
                 TableColumn("Model", value: \.model) { row in
                     HStack(spacing: 6) {
@@ -349,9 +364,9 @@ struct CloudCostSection: View {
                         .help("Time until the first visible streamed text")
                 }
                 .width(min: 70, ideal: 80)
-                TableColumn("Speed", value: \.speed) { row in
-                    Text(row.speed > 0 ? "\(Stats.compactCount(Int(row.speed.rounded()))) tok/s" : "n/a").monospacedDigit()
-                        .help("Average generation speed after the first token, where the stream reported it")
+                TableColumn("WPM", value: \.speed) { row in
+                    Text(row.speed >= 0 ? String(format: "%.0f", row.speed) : "n/a").monospacedDigit()
+                        .help("Returned words divided by total request time in minutes, including upload, initial latency, and processing. Older requests without word counts are excluded. Recording time is excluded from this per-model measure.")
                 }
                 .width(min: 60, ideal: 76)
             }
@@ -566,7 +581,8 @@ struct CloudRequestFacts: View {
                 row("Started", request.startedAt.formatted(date: .abbreviated, time: .standard))
                 row("Resolved in", RequestDisplay.seconds(request.elapsed))
                 row("First visible token", RequestDisplay.seconds(request.firstTokenLatency))
-                row("Generation speed", RequestDisplay.speed(request.tokensPerSecond))
+                row("Words per minute", request.wordsPerMinute.map { String(format: "%.1f wpm", $0) } ?? "Unavailable")
+                row("Generation speed after first token", RequestDisplay.speed(request.tokensPerSecond))
                 row("Output over whole request", RequestDisplay.speed(request.effectiveTokensPerSecond))
 
                 group("Request")
@@ -584,7 +600,7 @@ struct CloudRequestFacts: View {
                      destination: source)
                     .font(.caption)
             }
-            Text("First-token latency measures the first visible streamed output. Generation speed excludes the initial wait and reasoning tokens. Non-streamed or one-chunk replies cannot report it.")
+            Text("Words per minute includes the full request time. First-token latency is already part of that time. Stream generation speed excludes the initial wait and requires multiple chunks. Recording time is included in the main Statistics speed card.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }

@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 
 enum CloudTelemetryCheck {
     @MainActor
@@ -11,6 +12,69 @@ enum CloudTelemetryCheck {
             print("  \(condition ? "ok  " : "FAIL")  \(label)")
         }
         print("\ncloud telemetry and raw history")
+        let timedA = DictationRecord(raw: "one two three four", cleaned: "", appBundleID: "", appName: "Test",
+                                    duration: 2, processingDuration: 2)
+        let timedB = DictationRecord(raw: "five six", cleaned: "", appBundleID: "", appName: "Test",
+                                    duration: 1, processingDuration: 5)
+        let legacy = DictationRecord(raw: "old words without timing", cleaned: "", appBundleID: "", appName: "Test", duration: 1)
+        var day = timedA.dailyStat
+        day.add(timedB.dailyStat)
+        day.add(legacy.dailyStat)
+        let totals = Stats.compute(from: [day], range: .allTime)
+        expect(timedA.wordsPerSecond == 1 && abs((totals.wordsPerSecond ?? -1) - 0.6) < 0.000001,
+               "words per second includes recording and processing, weighted by elapsed time")
+        expect(abs((totals.endToEndWordsPerMinute ?? -1) - 36) < 0.000001,
+               "end-to-end words per minute converts the full recording and processing duration")
+        expect(Stats.series(from: [day], range: .today).last?.endToEndWordsPerMinute == 36,
+               "the words-per-minute trend uses the same elapsed time as its headline")
+        expect(totals.totalWords == 10 && totals.timedWords == 6 && totals.timedDictations == 2,
+               "legacy words remain in totals but do not invent processing timing")
+        expect(totals.endToEndTimeSaved == 0, "time saved subtracts the full recording and processing duration")
+        expect(Stats.compute(from: [legacy.dailyStat], range: .allTime).wordsPerSecond == nil,
+               "unknown processing time does not fall back to audio-only speed")
+        var invalid = timedA; invalid.processingDuration = -1
+        expect(invalid.wordsPerSecond == nil, "invalid timing cannot produce throughput")
+        expect(CloudService.outputWordCount(["candidates": [["content": ["parts": [
+            ["text": "hidden reasoning", "thought": true], ["text": "two words"]]]]]], api: .google) == 2,
+               "word counts exclude Google's thinking text")
+        expect(CloudService.outputWordCount(["text": "three transcript words"], api: .openAI) == 3,
+               "non-streamed audio transcription also reports output words")
+        expect(CloudService.outputWordCount(["content": [["type": "thinking", "text": "ignore me"],
+            ["type": "text", "text": "two words"]]], api: .anthropic) == 2,
+               "Anthropic word counts include only visible text")
+        expect(CloudService.outputWordCount(["usage": ["completion_tokens": 123]], api: .openAI) == nil,
+               "token counts are never substituted for word counts")
+        do {
+            let migrationURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("flow-timing-migration-\(UUID()).sqlite")
+            defer { try? FileManager.default.removeItem(at: migrationURL) }
+            do {
+                let original = try SQLiteStore(url: migrationURL)
+                try original.insert(timedA); try original.insert(timedB); try original.insert(legacy)
+            }
+            var handle: OpaquePointer?
+            guard sqlite3_open(migrationURL.path, &handle) == SQLITE_OK, let handle else { throw SQLiteStore.StoreError.open("migration fixture") }
+            let result = sqlite3_exec(handle, """
+                ALTER TABLE daily_stat DROP COLUMN timed_words;
+                ALTER TABLE daily_stat DROP COLUMN timed_duration;
+                ALTER TABLE daily_stat DROP COLUMN timed_dictations;
+                UPDATE daily_stat SET words = words + 100, dictations = dictations + 1;
+                """, nil, nil, nil)
+            sqlite3_close(handle)
+            expect(result == SQLITE_OK, "the fixture recreates the previous aggregate schema")
+            let upgraded = try SQLiteStore(url: migrationURL)
+            let migrated = Stats.compute(from: try upgraded.dailyStats(), range: .allTime)
+            expect(migrated.totalWords == 110 && migrated.timedWords == 6 && migrated.timedDuration == 10,
+                   "migration preserves purged totals and backfills only known timing")
+            let again = try SQLiteStore(url: migrationURL)
+            expect(try again.dailyStats() == upgraded.dailyStats(), "reopening does not double-count migrated timing")
+            try upgraded.purgeDictations(before: .distantFuture)
+            let retained = Stats.compute(from: try upgraded.dailyStats(), range: .allTime)
+            expect(retained.wordsPerSecond == migrated.wordsPerSecond && retained.timedDictations == 2,
+                   "end-to-end speed survives transcript retention")
+        } catch {
+            expect(false, "timing migration failed: \(error)")
+        }
+
         let openAI = TokenUsage.parse(["usage": ["prompt_tokens": 1000, "completion_tokens": 200,
             "prompt_tokens_details": ["cached_tokens": 100], "completion_tokens_details": ["reasoning_tokens": 50]]], api: .openAI)
         expect(openAI.input == 1000 && openAI.output == 200 && openAI.visibleOutput == 150,
@@ -143,7 +207,7 @@ enum CloudTelemetryCheck {
                 providerID: provider.id, providerName: "Test", modelID: "model", stage: .refinement)
             library.recordRequest(call)
             call.status = .succeeded; call.usage = openAI; call.price = price
-            call.elapsed = 2; call.firstTokenLatency = 0.5; call.generationDuration = 1.5
+            call.elapsed = 2; call.firstTokenLatency = 0.5; call.generationDuration = 1.5; call.outputWords = 10
             library.recordRequest(call)
             library.add(record)
             let reopened = try SQLiteStore(url: url)
@@ -155,7 +219,15 @@ enum CloudTelemetryCheck {
                    "per-version costs link to their exact configuration")
             expect(call.tokensPerSecond == 100 && call.effectiveTokensPerSecond == 75,
                    "generation speed and whole-request speed have different denominators")
+            expect(call.wordsPerMinute == 300,
+                   "cloud words per minute converts the full request duration")
+            expect(call.wordsPerSecond == 5, "cloud words per second includes initial latency and full processing time")
+            var nonstreamed = call; nonstreamed.firstTokenLatency = nil; nonstreamed.generationDuration = nil
+            expect(nonstreamed.wordsPerSecond == 5 && nonstreamed.wordsPerMinute == 300 && nonstreamed.tokensPerSecond == nil,
+                   "whole-request word speed works without streaming timing")
+            expect(try reopened.cloudRequests().first?.outputWords == 10, "output word counts survive persistence")
             var failed = call; failed.id = UUID(); failed.status = .failed; failed.usage = TokenUsage()
+            expect(failed.wordsPerSecond == nil, "failed requests never contribute to output throughput")
             library.recordRequest(failed)
             let summary = CloudCostSummary(requests: library.cloudRequests)
             expect(summary.calls == 2 && summary.unpricedCalls == 1 && summary.knownCost > 0,

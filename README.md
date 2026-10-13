@@ -52,7 +52,9 @@ scripts/build.sh debug       # build without launching
 `scripts/make-cert.sh` (falling back to ad-hoc, with a warning,
 if you have not run it).
 
-Flow is an accessory app. It lives in the menu bar with no dock icon.
+Flow appears in the Dock and Command-Tab while a window is open or minimized.
+After the last window closes, it stays in the menu bar. General settings can keep
+the Dock icon visible all the time.
 
 ### Verification
 
@@ -170,8 +172,11 @@ The details panel also splits the dictation into speaking time and processing ti
 configs and retries. Each cloud version shows the requests for its own config.
 
 Request details include provider-reported input, output, reasoning, cache and audio
-usage, request duration, first visible streamed-token latency, and generation speed.
-Non-streamed replies and one-chunk replies cannot report generation speed. Usage is
+usage, request duration, first visible streamed-token latency, and words per minute
+over the whole request. The per-model speed divides returned words by full request
+time in minutes, including upload, initial latency, and response processing. Stream generation speed remains a separate
+diagnostic that excludes the initial wait. Non-streamed replies and one-chunk replies
+cannot report that diagnostic. Usage is
 never inferred from word counts. USD cost estimates use exact provider/model prices
 from `models.dev/api.json`, cached daily and saved with each request. Missing exact
 Google Transcribe entries use official rates verified on October 1, 2026, with a
@@ -179,8 +184,8 @@ source URL and verification date. Updated catalog prices take precedence. This
 fallback applies only to the direct Google host. Compatible
 proxies can set a models.dev provider ID in the provider editor. Unknown prices or
 usage stay unknown and are counted separately from known spend. Accounting metadata
-contains no transcript, audio, request body, response body, or API key. It survives
-transcript deletion and retention so cost totals remain available.
+stores an output word count but no transcript, audio, request body, response body,
+or API key. It survives transcript deletion and retention so cost totals remain available.
 
 Saved keys load in the background. If macOS needs Keychain authorization, the window
 and local dictation stay available and the Models pane shows the pending state.
@@ -266,8 +271,8 @@ year, with a tooltip on each day and your current streak, longest streak, and be
 day. Under it, a range picker (Today, 7 days, 30 days, Year, All time) scopes everything
 below:
 
-- Words, dictations, speaking pace, and time saved, each with its change against the
-  previous period of the same length and a sparkline.
+- Words, dictations, end-to-end words per minute, and time saved, each with its change
+  against the previous period of the same length and a sparkline.
 - A words, dictations, or minutes chart per hour, day, week, or month, with a hover
   readout.
 - Words by hour of day and the apps your words went to.
@@ -286,8 +291,17 @@ count, a dictation count, and a duration, so a year of activity survives a 30-da
 retention setting. Upgrading backfills the table from whatever transcripts you still
 have.
 
-Time Saved compares speaking against typing at 40 wpm. It is an estimate and the UI
-says so.
+Words per minute is inserted words multiplied by 60, divided by total elapsed
+seconds. The elapsed time includes recording and the full processing wait until
+final text is ready. The processing timer includes transcription, cleanup, retries,
+and initial latency. Latency is already part of processing, so it is not added
+again. Totals divide summed words by summed time, rather than averaging session speeds.
+Only records with saved processing timing contribute. Older records without timing
+remain in word and dictation totals, and the speed tooltip reports timing coverage.
+These timing aggregates survive transcript retention.
+
+Time saved compares typing at 40 wpm against recording plus processing time, using
+the same records with known timing. It is an estimate and the UI says so.
 
 The heatmap is a sequential one-hue ramp, light→dark, with absence encoded as neutral
 gray rather than the palest blue. "Nothing happened" is not a small magnitude. Light

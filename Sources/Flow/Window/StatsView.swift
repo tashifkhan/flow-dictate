@@ -24,7 +24,7 @@ struct StatsView: View {
         let usesCloud = env.library.cloudRequests.contains(where: \.isInference)
 
         ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
+            LazyVStack(alignment: .leading, spacing: 20) {
                 yearCard(stats)
                 rangeBar
                 kpis(stats, previous: previous, series: series)
@@ -136,7 +136,7 @@ struct StatsView: View {
 
     private func kpis(_ stats: Stats, previous: Stats?, series: [StatsPoint]) -> some View {
         let typing = Stats.typingWordsPerMinute
-        let saved = Stats.humanDuration(stats.timeSaved)
+        let saved = stats.endToEndTimeSaved.map(Stats.humanDuration)
         let speaking = Stats.humanDuration(stats.totalDuration)
         return LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 12)], spacing: 12) {
             StatCard(title: "Words", value: stats.totalWords.formatted(),
@@ -147,15 +147,20 @@ struct StatsView: View {
                      delta: change(stats.dictationCount, previous?.dictationCount),
                      trend: series.map { Double($0.dictations) },
                      help: "Dictations in this range. You spoke for \(speaking.value)\(speaking.unit) in total.")
-            StatCard(title: "Speaking pace", value: stats.wordsPerMinute.formatted(), unit: "wpm",
-                     delta: change(stats.wordsPerMinute, previous?.wordsPerMinute),
-                     trend: series.map(\.wordsPerMinute),
-                     help: "Words per minute while the microphone was recording.")
-            StatCard(title: "Time saved", value: saved.value, unit: saved.unit,
-                     delta: previous.flatMap { $0.timeSaved > 0 ? (stats.timeSaved - $0.timeSaved) / $0.timeSaved : nil },
-                     trend: series.map { max(0, Double($0.words) / typing * 60 - $0.duration) },
-                     help: "An estimate: how long typing these words at \(Int(typing)) wpm would take, minus the time you spent speaking them.")
+            StatCard(title: "Words per minute", value: stats.endToEndWordsPerMinute.map { String(format: "%.0f", $0) } ?? "n/a", unit: "wpm",
+                     delta: change(stats.endToEndWordsPerMinute, previous?.endToEndWordsPerMinute),
+                     trend: series.map(\.endToEndWordsPerMinute),
+                     help: "Inserted words divided by recording time plus the full processing time until final text is ready, converted to minutes. Includes the initial wait, transcription, cleanup, and retries. Timing is available for \(stats.timedDictations) of \(stats.dictationCount) dictations. Older dictations without processing timing are excluded.")
+            StatCard(title: "Time saved", value: saved?.value ?? "n/a", unit: saved?.unit ?? "",
+                     delta: change(stats.endToEndTimeSaved, previous?.endToEndTimeSaved),
+                     trend: series.map { max(0, Double($0.timedWords) / typing * 60 - $0.timedDuration) },
+                     help: "Typing at \(Int(typing)) wpm minus recording and processing time, for the \(stats.timedDictations) dictations with saved timing.")
         }
+    }
+
+    private func change(_ now: Double?, _ before: Double?) -> Double? {
+        guard let now, let before, before > 0 else { return nil }
+        return (now - before) / before
     }
 
     private func change(_ now: Int, _ before: Int?) -> Double? {

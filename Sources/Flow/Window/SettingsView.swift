@@ -201,8 +201,11 @@ struct SettingsView: View {
                 }
 
                 Toggle(isOn: $settings.showDockIcon) {
-                    SettingLabel("Show a dock icon", icon: "dock.rectangle", color: .gray)
+                    SettingLabel("Always show a dock icon", icon: "dock.rectangle", color: .gray)
                 }
+
+                Text("Flow appears in the Dock and Command-Tab while a window is open.")
+                    .font(.caption).foregroundStyle(.secondary)
 
                 Picker(selection: $settings.openTo) {
                     ForEach(OpenTo.allCases) { Text($0.label).tag($0) }

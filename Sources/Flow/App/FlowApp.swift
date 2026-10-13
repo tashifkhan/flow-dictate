@@ -81,8 +81,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             // Accessory by default; the menu bar is the primary surface. A setting can
             // add the dock icon back for people who launch things that way.
+            for name in [NSWindow.didBecomeKeyNotification, NSWindow.didChangeOcclusionStateNotification,
+                         NSWindow.didMiniaturizeNotification, NSWindow.didDeminiaturizeNotification,
+                         NSWindow.willCloseNotification] {
+                NotificationCenter.default.addObserver(self, selector: #selector(windowVisibilityChanged(_:)),
+                                                       name: name, object: nil)
+            }
             Settings.shared.applyActivationPolicy()
             AppEnvironment.shared.start()
+        }
+    }
+
+    @MainActor @objc private func windowVisibilityChanged(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow else { return }
+        if notification.name == NSWindow.willCloseNotification {
+            Settings.shared.windowWillClose(window)
+        } else if notification.name == NSWindow.didBecomeKeyNotification {
+            Settings.shared.windowDidOpen(window)
+        } else {
+            Settings.shared.applyActivationPolicy()
         }
     }
 
