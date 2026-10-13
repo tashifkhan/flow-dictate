@@ -201,9 +201,9 @@ fields use Accessibility edits; readable browser and Electron fields use real
 paste events so the editor receives each complete chunk. Flow restores the clipboard
 after the field confirms the edit. Flow checks the field and caret before
 each update. If you move focus or edit the text, it stops updating the field and
-shows the remaining response in the pill. A field that has not confirmed an edit
-within 250 ms gets the pill too, and the pill stays up for at least 0.9 s before it
-collapses. Rich editors that already hold paragraphs can skip the separators in their
+shows the remaining response in the pill. The pill appears only when no field can be
+tracked or the field refuses an edit, never for a field that is slow but working.
+Once it appears it stays up for at least 0.9 s before it collapses. Rich editors that already hold paragraphs can skip the separators in their
 selection offsets; Flow finds the draft in the field's text and keeps streaming
 after the existing paragraphs. Composers that parse pasted Markdown, like T3 Code's,
 turn a blank line into one paragraph break and "- " lines into lists. Flow accepts

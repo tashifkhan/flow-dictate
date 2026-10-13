@@ -48,6 +48,11 @@ enum PanelCheck {
             print("\(size.rawValue) initial frame: \(String(describing: frame))")
             await snapshot(size.rawValue + "-waveform")
             await controller.previewPanelForCheck(.processing, toField: true)
+            for step in 1...5 {
+                await controller.previewPanelForCheck(.processing, text: String(repeating: "Streaming into the field. ", count: step),
+                                                      toField: true)
+            }
+            report[size.rawValue + "NoPillWhileFieldStreams"] = !controller.showsStreamingPreview
             await snapshot(size.rawValue + "-field-progress")
             for step in 1...20 {
                 await controller.previewPanelForCheck(.processing, text: String(repeating: "A calm live preview with the complete response. ", count: step))
