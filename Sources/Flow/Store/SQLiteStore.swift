@@ -111,7 +111,35 @@ final class SQLiteStore: HistoryStore, @unchecked Sendable {
                 duration REAL NOT NULL DEFAULT 0
             );
             """)
-        try backfillDailyStats()
+        let columns = try read("PRAGMA table_info(daily_stat);", binds: { _ in }, row: { text($0, 1) })
+        let needsTiming = !columns.contains("timed_words")
+        try exec("BEGIN IMMEDIATE;")
+        do {
+            try addColumn("timed_words INTEGER NOT NULL DEFAULT 0", named: "timed_words", to: "daily_stat")
+            try addColumn("timed_duration REAL NOT NULL DEFAULT 0", named: "timed_duration", to: "daily_stat")
+            try addColumn("timed_dictations INTEGER NOT NULL DEFAULT 0", named: "timed_dictations", to: "daily_stat")
+            try backfillDailyStats()
+            if needsTiming {
+                // Preserve historical word totals. Missing processing time stays unknown.
+                var totals: [Date: DailyStat] = [:]
+                for record in try dictations(matching: nil, limit: nil) {
+                    let stat = record.dailyStat
+                    totals[stat.day, default: DailyStat(day: stat.day, words: 0, dictations: 0, duration: 0)].add(stat)
+                }
+                for stat in totals.values {
+                    try write("UPDATE daily_stat SET timed_words = ?, timed_duration = ?, timed_dictations = ? WHERE day = ?;") { s in
+                        sqlite3_bind_int(s, 1, Int32(stat.timedWords))
+                        sqlite3_bind_double(s, 2, stat.timedDuration)
+                        sqlite3_bind_int(s, 3, Int32(stat.timedDictations))
+                        sqlite3_bind_double(s, 4, stat.day.timeIntervalSince1970)
+                    }
+                }
+            }
+            try exec("COMMIT;")
+        } catch {
+            try? exec("ROLLBACK;")
+            throw error
+        }
     }
 
     private func addColumn(_ declaration: String, named name: String, to table: String) throws {
@@ -130,9 +158,7 @@ final class SQLiteStore: HistoryStore, @unchecked Sendable {
         for record in try dictations(matching: nil, limit: nil) {
             let day = calendar.startOfDay(for: record.createdAt)
             var stat = totals[day] ?? DailyStat(day: day, words: 0, dictations: 0, duration: 0)
-            stat.words += Stats.wordCount(record.inserted)
-            stat.dictations += 1
-            stat.duration += record.duration
+            stat.add(record.dailyStat)
             totals[day] = stat
         }
         for stat in totals.values { try addDailyStat(stat) }
@@ -143,26 +169,36 @@ final class SQLiteStore: HistoryStore, @unchecked Sendable {
     /// Adds one day's worth onto whatever is already recorded for that day.
     private func addDailyStat(_ stat: DailyStat) throws {
         try write("""
-            INSERT INTO daily_stat (day, words, dictations, duration) VALUES (?,?,?,?)
+            INSERT INTO daily_stat (day, words, dictations, duration, timed_words, timed_duration, timed_dictations)
+            VALUES (?,?,?,?,?,?,?)
             ON CONFLICT(day) DO UPDATE SET
                 words = words + excluded.words,
                 dictations = dictations + excluded.dictations,
-                duration = duration + excluded.duration;
+                duration = duration + excluded.duration,
+                timed_words = timed_words + excluded.timed_words,
+                timed_duration = timed_duration + excluded.timed_duration,
+                timed_dictations = timed_dictations + excluded.timed_dictations;
             """) { s in
             sqlite3_bind_double(s, 1, stat.day.timeIntervalSince1970)
             sqlite3_bind_int(s, 2, Int32(stat.words))
             sqlite3_bind_int(s, 3, Int32(stat.dictations))
             sqlite3_bind_double(s, 4, stat.duration)
+            sqlite3_bind_int(s, 5, Int32(stat.timedWords))
+            sqlite3_bind_double(s, 6, stat.timedDuration)
+            sqlite3_bind_int(s, 7, Int32(stat.timedDictations))
         }
     }
 
     func dailyStats() throws -> [DailyStat] {
-        try read("SELECT day, words, dictations, duration FROM daily_stat ORDER BY day;", binds: { _ in }) { s in
+        try read("SELECT day, words, dictations, duration, timed_words, timed_duration, timed_dictations FROM daily_stat ORDER BY day;", binds: { _ in }) { s in
             DailyStat(
                 day: Date(timeIntervalSince1970: sqlite3_column_double(s, 0)),
                 words: Int(sqlite3_column_int(s, 1)),
                 dictations: Int(sqlite3_column_int(s, 2)),
-                duration: sqlite3_column_double(s, 3)
+                duration: sqlite3_column_double(s, 3),
+                timedWords: Int(sqlite3_column_int(s, 4)),
+                timedDuration: sqlite3_column_double(s, 5),
+                timedDictations: Int(sqlite3_column_int(s, 6))
             )
         }
     }
@@ -188,12 +224,7 @@ final class SQLiteStore: HistoryStore, @unchecked Sendable {
         for version in d.versions { try addVersion(version, to: d.id) }
 
         // Mirror into the aggregate, which retention will not purge.
-        try addDailyStat(DailyStat(
-            day: Calendar.current.startOfDay(for: d.createdAt),
-            words: Stats.wordCount(d.inserted),
-            dictations: 1,
-            duration: d.duration
-        ))
+        try addDailyStat(d.dailyStat)
     }
 
     func dictations(matching query: String?, limit: Int?) throws -> [DictationRecord] {

@@ -31,6 +31,9 @@ enum CloudHTTPCheck {
             let result = await service.run([route], job: job, makeContext: { _ in context }, progress: { _ in }, late: { _ in })
             let request = collector.requests.first { $0.configID == route.id }
             checks["\(api.rawValue) streamed output"] = result?.text == "Hello world."
+            checks["\(api.rawValue) full request word speed"] = request?.outputWords == 2
+                && request?.wordsPerSecond == request?.elapsed.map { 2 / $0 }
+                && request?.wordsPerMinute == request?.elapsed.map { (2 / $0) * 60 }
             checks["\(api.rawValue) usage and first token"] = request?.usage.input == 100 && request?.usage.output == 20
                 && request?.firstTokenLatency != nil && request?.generationDuration != nil
         }

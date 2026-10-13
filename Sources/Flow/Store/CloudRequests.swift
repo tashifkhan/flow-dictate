@@ -83,6 +83,8 @@ struct CloudRequestRecord: Codable, Identifiable, Equatable, Sendable {
     /// First visible output chunk, rather than headers or a thinking event.
     var firstTokenLatency: TimeInterval?
     var generationDuration: TimeInterval?
+    /// Count of returned text words. No response content is retained here.
+    var outputWords: Int?
     var status: Status = .running
     var httpStatus: Int?
     var error: String?
@@ -102,6 +104,13 @@ struct CloudRequestRecord: Codable, Identifiable, Equatable, Sendable {
         guard let tokens = usage.visibleOutput, let generationDuration, generationDuration > 0 else { return nil }
         return Double(tokens) / generationDuration
     }
+    /// Includes upload, the initial wait, and the complete response.
+    var wordsPerSecond: Double? {
+        guard status == .succeeded, let outputWords, outputWords >= 0,
+              let elapsed, elapsed.isFinite, elapsed > 0 else { return nil }
+        return Double(outputWords) / elapsed
+    }
+    var wordsPerMinute: Double? { wordsPerSecond.map { $0 * 60 } }
     var effectiveTokensPerSecond: Double? {
         guard let tokens = usage.visibleOutput, let elapsed, elapsed > 0 else { return nil }
         return Double(tokens) / elapsed
@@ -131,13 +140,23 @@ enum RequestDisplay {
 }
 
 struct CloudCostSummary {
-    let requests: [CloudRequestRecord]
-    var calls: Int { requests.filter(\.isInference).count }
-    var knownCost: Double { requests.compactMap(\.estimatedCost).reduce(0, +) }
-    var unpricedCalls: Int { requests.filter { $0.isInference && $0.estimatedCost == nil }.count }
-    var inputTokens: Int { requests.compactMap(\.usage.input).reduce(0, +) }
-    var outputTokens: Int { requests.compactMap(\.usage.output).reduce(0, +) }
-    var completed: Int { requests.filter { $0.status == .succeeded }.count }
+    private(set) var calls = 0
+    private(set) var knownCost = 0.0
+    private(set) var unpricedCalls = 0
+    private(set) var inputTokens = 0
+    private(set) var outputTokens = 0
+    private(set) var completed = 0
+
+    init(requests: [CloudRequestRecord]) {
+        for request in requests {
+            if request.isInference { calls += 1 }
+            if let cost = request.estimatedCost { knownCost += cost }
+            else if request.isInference { unpricedCalls += 1 }
+            inputTokens += request.usage.input ?? 0
+            outputTokens += request.usage.output ?? 0
+            if request.status == .succeeded { completed += 1 }
+        }
+    }
 }
 
 extension Duration {

@@ -47,6 +47,15 @@ struct Stats: Sendable {
     var totalWords = 0
     var totalDuration: TimeInterval = 0
     var dictationCount = 0
+    var timedWords = 0
+    var timedDuration: TimeInterval = 0
+    var timedDictations = 0
+    /// Full recording-to-final-text throughput, weighted by elapsed time.
+    var wordsPerSecond: Double? { timedDuration > 0 ? Double(timedWords) / timedDuration : nil }
+    var endToEndWordsPerMinute: Double? { wordsPerSecond.map { $0 * 60 } }
+    var endToEndTimeSaved: TimeInterval? {
+        timedDictations > 0 ? max(0, Double(timedWords) / Self.typingWordsPerMinute * 60 - timedDuration) : nil
+    }
     /// Words per minute while actually speaking.
     var wordsPerMinute = 0
     /// Time not spent typing, in seconds. See `typingWordsPerMinute`.
@@ -82,6 +91,9 @@ struct Stats: Sendable {
             stats.totalWords += day.words
             stats.totalDuration += day.duration
             stats.dictationCount += day.dictations
+            stats.timedWords += day.timedWords
+            stats.timedDuration += day.timedDuration
+            stats.timedDictations += day.timedDictations
         }
 
         if stats.totalDuration > 0 {
@@ -179,8 +191,12 @@ struct StatsPoint: Identifiable, Hashable, Sendable {
     var words = 0
     var dictations = 0
     var duration: TimeInterval = 0
+    var timedWords = 0
+    var timedDuration: TimeInterval = 0
 
     var id: Date { date }
+    var wordsPerSecond: Double { timedDuration > 0 ? Double(timedWords) / timedDuration : 0 }
+    var endToEndWordsPerMinute: Double { wordsPerSecond * 60 }
     var minutes: Double { duration / 60 }
     var wordsPerMinute: Double { duration > 0 ? Double(words) / (duration / 60) : 0 }
 }
@@ -220,6 +236,8 @@ extension Stats {
             points[position].words += day.words
             points[position].dictations += day.dictations
             points[position].duration += day.duration
+            points[position].timedWords += day.timedWords
+            points[position].timedDuration += day.timedDuration
         }
         return points
     }
@@ -235,6 +253,8 @@ extension Stats {
             points[hour].words += wordCount(record.inserted)
             points[hour].dictations += 1
             points[hour].duration += record.duration
+            points[hour].timedWords += record.dailyStat.timedWords
+            points[hour].timedDuration += record.dailyStat.timedDuration
         }
         return points
     }

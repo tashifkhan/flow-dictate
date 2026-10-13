@@ -9,6 +9,14 @@ struct ContributionGraph: View {
     var stats: Stats
     var requests: [CloudRequestRecord] = []
     var metric: Metric = .words
+    private let columns: [[Day]]
+
+    init(stats: Stats, requests: [CloudRequestRecord] = [], metric: Metric = .words) {
+        self.stats = stats
+        self.requests = requests
+        self.metric = metric
+        columns = Self.buildColumns(stats: stats, requests: requests, metric: metric)
+    }
 
     enum Metric: String, CaseIterable, Identifiable {
         case words = "Words", spend = "Cloud spend", calls = "Cloud calls"
@@ -34,7 +42,7 @@ struct ContributionGraph: View {
     private let gap: CGFloat = 3
     private let labelWidth: CGFloat = 24
     private let monthRowHeight: CGFloat = 11
-    private let weeks = 53
+    private static let weeks = 53
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -51,7 +59,6 @@ struct ContributionGraph: View {
     /// Weekday labels stay put; the weeks scroll sideways when the card is narrower
     /// than a year, opening on the current week.
     private var grid: some View {
-        let columns = buildColumns()
         return HStack(alignment: .top, spacing: gap) {
             weekdayLabels
                 .padding(.top, monthRowHeight + 4)
@@ -62,7 +69,7 @@ struct ContributionGraph: View {
                         HStack(alignment: .top, spacing: gap) {
                             ForEach(Array(columns.enumerated()), id: \.offset) { index, week in
                                 VStack(spacing: gap) {
-                                    ForEach(week, id: \.self) { day in
+                                    ForEach(week, id: \.date) { day in
                                         cellView(day)
                                     }
                                 }
@@ -200,7 +207,7 @@ struct ContributionGraph: View {
     // MARK: - Data
 
     /// 53 columns of 7 days, ending on the week containing today.
-    private func buildColumns() -> [[Day]] {
+    private static func buildColumns(stats: Stats, requests: [CloudRequestRecord], metric: Metric) -> [[Day]] {
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: .now)
         let callsByDay = Dictionary(grouping: StatsRange.year.requests(requests), by: { calendar.startOfDay(for: $0.startedAt) })
@@ -244,7 +251,7 @@ struct ContributionGraph: View {
     }
 
     private var totalDescription: String {
-        let days = buildColumns().flatMap { $0 }
+        let days = columns.flatMap { $0 }
         let total = days.reduce(0) { $0 + $1.value }
         switch metric {
         case .words: return "\(Stats.compactCount(Int(total))) words in the last year"

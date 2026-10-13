@@ -34,7 +34,20 @@ struct DictationRecord: Identifiable, Hashable, Sendable {
     var appleRaw: String?
     var processingDuration: TimeInterval?
 
-    var totalDuration: TimeInterval? { processingDuration.map { duration + $0 } }
+    var totalDuration: TimeInterval? {
+        guard duration.isFinite, duration >= 0,
+              let processingDuration, processingDuration.isFinite, processingDuration >= 0 else { return nil }
+        let total = duration + processingDuration
+        return total > 0 ? total : nil
+    }
+    var wordsPerSecond: Double? { totalDuration.map { Double(Stats.wordCount(inserted)) / $0 } }
+
+    var dailyStat: DailyStat {
+        let words = Stats.wordCount(inserted)
+        return DailyStat(day: Calendar.current.startOfDay(for: createdAt), words: words,
+                         dictations: 1, duration: duration, timedWords: totalDuration == nil ? 0 : words,
+                         timedDuration: totalDuration ?? 0, timedDictations: totalDuration == nil ? 0 : 1)
+    }
     var rawTranscription: String { appleRaw ?? versions.first(where: { $0.source == .raw })?.text ?? raw }
     var rawLabel: String { appleRaw == nil ? "Saved raw transcription" : "Raw · Apple speech recognition" }
 
@@ -90,6 +103,20 @@ struct DailyStat: Identifiable, Hashable, Sendable {
     var words: Int
     var dictations: Int
     var duration: TimeInterval
+
+    /// Only dictations with saved processing timing contribute to these totals.
+    var timedWords = 0
+    var timedDuration: TimeInterval = 0
+    var timedDictations = 0
+
+    mutating func add(_ other: DailyStat) {
+        words += other.words
+        dictations += other.dictations
+        duration += other.duration
+        timedWords += other.timedWords
+        timedDuration += other.timedDuration
+        timedDictations += other.timedDictations
+    }
 
     var id: Date { day }
 }

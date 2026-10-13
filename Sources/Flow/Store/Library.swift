@@ -254,9 +254,7 @@ final class MemoryStore: HistoryStore, @unchecked Sendable {
             for record in dictationRows.values {
                 let day = calendar.startOfDay(for: record.createdAt)
                 var stat = totals[day] ?? DailyStat(day: day, words: 0, dictations: 0, duration: 0)
-                stat.words += Stats.wordCount(record.inserted)
-                stat.dictations += 1
-                stat.duration += record.duration
+                stat.add(record.dailyStat)
                 totals[day] = stat
             }
             return totals.values.sorted { $0.day < $1.day }

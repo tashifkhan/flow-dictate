@@ -489,6 +489,7 @@ actor CloudService {
                 record.usage = TokenUsage.parse(json, api: provider.api)
             }
             if scope.stage == .models { record.usage = TokenUsage(input: 0, output: 0) }
+            if record.isInference { record.outputWords = Self.outputWordCount(json, api: provider.api) }
             record.status = .succeeded
             return json
         } catch {
@@ -497,6 +498,28 @@ actor CloudService {
             record.error = error is CloudError ? error.localizedDescription : String(describing: type(of: error))
             throw error
         }
+    }
+
+    static func outputWordCount(_ json: [String: Any], api: CloudAPI) -> Int? {
+        let text: String?
+        if let transcript = json["text"] as? String {
+            text = transcript
+        } else {
+            switch api {
+            case .openAI:
+                let message = (json["choices"] as? [[String: Any]])?.first?["message"] as? [String: Any]
+                text = message?["content"] as? String
+                    ?? (message?["content"] as? [[String: Any]])?.compactMap { $0["text"] as? String }.joined()
+            case .google:
+                let content = (json["candidates"] as? [[String: Any]])?.first?["content"] as? [String: Any]
+                text = (content?["parts"] as? [[String: Any]])?.filter { $0["thought"] as? Bool != true }
+                    .compactMap { $0["text"] as? String }.joined()
+            case .anthropic:
+                text = (json["content"] as? [[String: Any]])?.filter { $0["type"] as? String == "text" }
+                    .compactMap { $0["text"] as? String }.joined()
+            }
+        }
+        return text.map(Stats.wordCount)
     }
 
     private func geminiText(_ json: [String: Any]) throws -> String {

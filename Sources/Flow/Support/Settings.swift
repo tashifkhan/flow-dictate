@@ -235,9 +235,27 @@ final class Settings {
         static let legacyCloud = "cloudSettingsV1"
     }
 
-    /// The menu bar stays the primary surface either way; this only adds the dock icon.
+    private let closingWindows = NSHashTable<NSWindow>.weakObjects()
+
+    func windowWillClose(_ window: NSWindow) {
+        closingWindows.add(window)
+        applyActivationPolicy()
+    }
+
+    func windowDidOpen(_ window: NSWindow) {
+        closingWindows.remove(window)
+        applyActivationPolicy()
+    }
+
+    /// Open windows belong in Command-Tab. The preference keeps Flow there after closing them.
     func applyActivationPolicy() {
-        NSApp.setActivationPolicy(showDockIcon ? .regular : .accessory)
+        let hasWindow = NSApp.windows.contains {
+            !closingWindows.contains($0) && !($0 is NSPanel)
+                && $0.level == .normal && $0.styleMask.contains(.titled)
+                && ($0.isVisible || $0.isMiniaturized)
+        }
+        let policy: NSApplication.ActivationPolicy = showDockIcon || hasWindow ? .regular : .accessory
+        if NSApp.activationPolicy() != policy { NSApp.setActivationPolicy(policy) }
     }
 
     private init() {
