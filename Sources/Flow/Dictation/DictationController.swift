@@ -720,21 +720,16 @@ final class DictationController {
         let text = DictationCleanupPolicy.withoutEmDashes(text)
         streamedText = text
         if let stream = streamingInsertion {
-            // A healthy field confirms an edit in under 100 ms. One that has not after
-            // 250 ms may take its full second to give up, and a fast model has finished
-            // by then, so show the words in the pill meanwhile.
-            let reveal = Task { @MainActor [weak self] in
-                try? await Task.sleep(for: .milliseconds(250))
-                guard let self, !Task.isCancelled, self.resultsToken == token, self.phase == .processing,
-                      !text.isEmpty else { return }
-                self.fallbackPreviewLatched = true
-            }
             let updated = await stream.update(noteDraft(text))
-            reveal.cancel()
             guard resultsToken == token, phase == .processing, !Task.isCancelled else { return }
             isStreamingToField = updated
         }
-        if !isStreamingToField, !text.isEmpty { fallbackPreviewLatched = true }
+        // The pill is only for words the field cannot show: no tracked field at all, or
+        // an edit the field refused. A slow but working field never gets it.
+        if !isStreamingToField, !text.isEmpty, !fallbackPreviewLatched {
+            fallbackPreviewLatched = true
+            log.notice("streaming preview in the pill: \(self.streamingInsertion == nil ? "no tracked field" : "the field stopped accepting edits", privacy: .public)")
+        }
     }
 
     /// A model that answers in one chunk would otherwise flash the pill's words and

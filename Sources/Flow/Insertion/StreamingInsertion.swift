@@ -94,9 +94,20 @@ final class StreamingInsertion {
     }
 
     static func capture(in app: FrontApp) -> StreamingInsertion? {
-        guard app.hasTextTarget, !app.isSecure, Permissions.hasAccessibility,
-              let field = AccessibilityStreamingField(app: app) else { return nil }
-        return StreamingInsertion(field: field)
+        let log = Logger(subsystem: "sh.taf.flow", category: "stream")
+        guard app.hasTextTarget, !app.isSecure, Permissions.hasAccessibility else {
+            log.notice("no stream: \(!app.hasTextTarget ? "no text field" : app.isSecure ? "secure field" : "no Accessibility", privacy: .public)")
+            return nil
+        }
+        guard let field = AccessibilityStreamingField(app: app) else {
+            log.notice("no stream: the focused field does not take Accessibility edits")
+            return nil
+        }
+        guard let stream = StreamingInsertion(field: field) else {
+            log.notice("no stream: the field's text and caret could not be read")
+            return nil
+        }
+        return stream
     }
 
     func update(_ next: String) async -> Bool {
