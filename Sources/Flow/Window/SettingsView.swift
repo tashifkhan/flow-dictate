@@ -378,7 +378,11 @@ struct SettingsView: View {
                                 .labelsHidden()
                                 .foregroundStyle(.secondary)
                             Button {
-                                lexicon.personalDetails.custom.removeAll { $0.id == detail.id }
+                                // Read the id before mutating. `detail` reads through the same
+                                // array, so reading it inside removeAll is an exclusivity
+                                // violation that aborts the app.
+                                let id = detail.id
+                                lexicon.removeCustomDetail(id)
                             } label: {
                                 Image(systemName: "minus.circle")
                             }

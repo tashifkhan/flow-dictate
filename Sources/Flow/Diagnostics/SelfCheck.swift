@@ -796,6 +796,11 @@ enum SelfCheck {
         let decoded = try? JSONDecoder().decode(Lexicon.PersonalDetails.self, from: legacy)
         expect(decoded?.email == "person@example.com" && decoded?.custom.isEmpty == true,
                "details saved before custom fields still load")
+        let removed = lexicon.personalDetails.custom[1].id
+        lexicon.removeCustomDetail(removed)
+        expect(lexicon.personalDetails.custom.map(\.spokenLabel) == ["GitHub", "Empty"]
+               && Lexicon(defaults: lexiconDefaults).personalDetails.custom.count == 2,
+               "removing a custom field removes only that field, and the removal is saved")
         lexicon.personalDetails.custom = []
         let nonCascading = DictationSubstitutions(rules: [.init(from: "alpha", to: "beta"), .init(from: "beta", to: "gamma")])
         expect(nonCascading.apply("alpha beta") == "beta gamma", "replacement values do not trigger another rule")

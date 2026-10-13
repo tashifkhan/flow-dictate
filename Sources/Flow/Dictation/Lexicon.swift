@@ -192,6 +192,10 @@ final class Lexicon {
         return DictationSubstitutions(rules: rules, vocabulary: recognitionWords)
     }
 
+    func removeCustomDetail(_ id: CustomDetail.ID) {
+        personalDetails.custom.removeAll { $0.id == id }
+    }
+
     /// Custom details you chose to send with every request, as the model reads them.
     var promptDetails: [SpeakerDetail] {
         personalDetails.custom.filter { $0.alwaysInPrompt && $0.isComplete }.map {
