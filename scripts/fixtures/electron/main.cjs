@@ -11,7 +11,7 @@ app.whenReady().then(async () => {
   function configureMenu(enabled) {
     menuEnabled = enabled;
     Menu.setApplicationMenu(Menu.buildFromTemplate(enabled
-      ? [{ label: 'Edit', submenu: [{ role: 'paste' }] }]
+      ? [{ label: 'Edit', submenu: [{ role: 'paste' }, { role: 'selectAll' }] }]
       : []));
   }
   configureMenu(true);

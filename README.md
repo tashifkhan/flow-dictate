@@ -205,7 +205,11 @@ shows the remaining response in the pill. A field that has not confirmed an edit
 within 250 ms gets the pill too, and the pill stays up for at least 0.9 s before it
 collapses. Rich editors that already hold paragraphs can skip the separators in their
 selection offsets; Flow finds the draft in the field's text and keeps streaming
-after the existing paragraphs. Escape restores the original selection
+after the existing paragraphs. Composers that parse pasted Markdown, like T3 Code's,
+turn a blank line into one paragraph break and "- " lines into lists. Flow accepts
+that rewrite when the words match the draft exactly and the text around it is
+untouched. Each detach is logged with lengths and offsets, never the text, under
+`sh.taf.flow` category `stream`. Escape restores the original selection
 when the draft is still unchanged and focused. The final result reconciles the draft
 with cleanup, replacement rules, and list numbering.
 

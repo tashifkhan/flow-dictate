@@ -1,11 +1,35 @@
 <!doctype html>
 <html lang="en"><meta charset="utf-8"><title>Flow insertion fixture</title>
-<style>textarea, [contenteditable] { width: 95%; height: 150px; white-space: pre-wrap; }</style>
+<style>textarea, [contenteditable] { width: 95%; height: 150px; white-space: pre-wrap; }
+/* A chat composer: grows with its text, then scrolls. */
+#markdown { height: auto; min-height: 20px; max-height: 120px; overflow-y: auto; }</style>
 <textarea id="plain"></textarea>
 <div id="rich" contenteditable="true" role="textbox" aria-multiline="true" hidden></div>
+<div id="markdown" contenteditable="true" role="textbox" aria-multiline="true" hidden></div>
 <script>
 let editor = plain, revision = '', inputs = 0, pastes = 0, saved = '';
-for (const field of [plain, rich]) {
+// Like TipTap composers, parse pasted text as Markdown instead of inserting it verbatim.
+markdown.addEventListener('paste', event => {
+  event.preventDefault();
+  const blocks = [];
+  let list = null;
+  for (const line of event.clipboardData.getData('text/plain').split(/\n+/)) {
+    const bullet = /^[-*+]\s+(.*)$/.exec(line), ordered = /^\d+[.)]\s+(.*)$/.exec(line), item = bullet || ordered;
+    if (item) {
+      const tag = bullet ? 'ul' : 'ol';
+      if (!list || list.tag !== tag) blocks.push(list = { tag, items: [] });
+      list.items.push(item[1]);
+    } else {
+      list = null;
+      blocks.push({ tag: 'p', text: line });
+    }
+  }
+  const escape = text => text.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+  document.execCommand('insertHTML', false, blocks.map(block => block.tag === 'p'
+    ? `<p>${escape(block.text) || '<br>'}</p>`
+    : `<${block.tag}>${block.items.map(item => `<li>${escape(item)}</li>`).join('')}</${block.tag}>`).join(''));
+});
+for (const field of [plain, rich, markdown]) {
   field.addEventListener('paste', () => pastes++);
   field.addEventListener('input', () => {
     inputs++;
@@ -15,8 +39,9 @@ for (const field of [plain, rich]) {
 }
 function resetEditor(config) {
   plain.hidden = config.mode !== 'textarea';
-  rich.hidden = config.mode === 'textarea';
-  editor = config.mode === 'textarea' ? plain : rich;
+  rich.hidden = config.mode !== 'contenteditable';
+  markdown.hidden = config.mode !== 'markdown';
+  editor = { textarea: plain, contenteditable: rich, markdown }[config.mode];
   inputs = pastes = 0;
   revision = config.revision;
   if (editor === plain) {

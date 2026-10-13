@@ -78,6 +78,11 @@ enum ElectronInsertionCheck {
             passed = passed && complete && events && restored && NSPasteboard.general.string(forType: .string) == "User clipboard sentinel"
         }
         // A draft that already holds text, with the caret after it: the usual second dictation.
+        // A long answer in paragraphs, so the composer grows past its height and scrolls.
+        let sentences = (1...24).map { "Sentence number \(Self.spelled($0)) explains another part of the plan." }
+        let growingDrafts = (1...sentences.count).map { count in
+            "\n" + sentences.prefix(count).enumerated().map { $0.offset % 4 == 3 ? $0.element + "\n\n" : $0.element + " " }.joined()
+        }
         let prefilled: [(label: String, command: [String: Any])] = [
             ("prefilledTextarea", ["mode": "textarea", "text": "Existing note.", "caretAtEnd": true]),
             ("prefilledLine", ["mode": "contenteditable", "text": "Existing line", "caretAtEnd": true]),
@@ -88,6 +93,15 @@ enum ElectronInsertionCheck {
                                     "html": "<p>First paragraph.</p><p><br></p><p>Third paragraph.</p>", "caretAtEnd": true]),
             ("prefilledParagraphsMultiline", ["mode": "contenteditable", "text": "", "multiline": true,
                                               "html": "<p>First paragraph.</p><p>Second paragraph.</p>", "caretAtEnd": true]),
+            // Composers that parse pasted Markdown, and grow with their text before they scroll.
+            ("markdownEmpty", ["mode": "markdown", "text": "", "caretAtEnd": true, "drafts": [
+                "First idea.", "First idea.\n\nSecond idea is here",
+                "First idea.\n\nSecond idea is here.\n\n- One item\n- Two items"]]),
+            ("markdownPrefilled", ["mode": "markdown", "text": "", "html": "<p>Replay the audio:</p>", "caretAtEnd": true,
+                                   "drafts": ["\n- Why do we have", "\n- Why do we have two buttons?\n- Please remove the purple",
+                                              "\n- Why do we have two buttons?\n- Please remove the purple one.\n\nAnd move the picker."]]),
+            ("markdownGrowing", ["mode": "markdown", "text": "", "html": "<p>Earlier note.</p>", "caretAtEnd": true,
+                                 "drafts": growingDrafts]),
         ]
         for (label, base) in prefilled {
             let revision = UUID().uuidString
@@ -117,17 +131,22 @@ enum ElectronInsertionCheck {
                 durations.append(Int((clock.now - began).timeInterval * 1000))
                 return updated
             }
-            let first = await timed("Hello")
+            let drafts = base["drafts"] as? [String]
+                ?? ["Hello", "Hello\(separator)world and the rest", "Hi\(separator)world and the rest!"]
+            let first = await timed(drafts[0])
             report[label + "AXAfterFirst"] = axState(pid: pid)
-            let next = await timed("Hello\(separator)world and the rest")
-            let finalText = "Hi\(separator)world and the rest!"
+            var next = true
+            for draft in drafts.dropFirst().dropLast() { next = await timed(draft) && next }
+            let finalText = drafts[drafts.count - 1]
             let final = await timed(finalText)
-            report[label + "UpdateMilliseconds"] = durations
+            report[label + "UpdateMilliseconds"] = durations.count > 6 ? [durations.max() ?? 0] : durations
             report[label + "AXAfterFinal"] = axState(pid: pid)
             try? await Task.sleep(for: .milliseconds(150))
             let saved = read("state.json")?["saved"] as? String
             // A pasted line break becomes a new block, which innerText spells its own way.
-            let landed = multiline
+            let landed = base["mode"] as? String == "markdown"
+                ? saved.map(Self.words) == Self.words(before + finalText)
+                : multiline
                 ? saved?.hasPrefix(before + "Hi") == true && saved?.hasSuffix("world and the rest!") == true
                 : saved == before + finalText
             let complete = first && next && final && landed
@@ -136,11 +155,26 @@ enum ElectronInsertionCheck {
             report[label + "Complete"] = complete
             let rollback = await stream.rollback()
             try? await Task.sleep(for: .milliseconds(150))
-            let restored = rollback && read("state.json")?["saved"] as? String == before
+            let after = read("state.json")?["saved"] as? String
+            // Deleting a pasted list can leave the editor's empty paragraph behind.
+            let restored = rollback && (base["mode"] as? String == "markdown"
+                ? after.map(Self.words) == Self.words(before) : after == before)
             report[label + "Rollback"] = restored
+            if !restored {
+                report[label + "RollbackReported"] = rollback
+                report[label + "AXAfterRollback"] = axState(pid: pid)
+            }
             passed = passed && complete && restored
         }
         report["passed"] = passed
+    }
+
+    private static func words(_ text: String) -> String {
+        String(String.UnicodeScalarView(text.unicodeScalars.filter { CharacterSet.letters.contains($0) }))
+    }
+
+    private static func spelled(_ number: Int) -> String {
+        NumberFormatter.localizedString(from: number as NSNumber, number: .spellOut)
     }
 
     @MainActor

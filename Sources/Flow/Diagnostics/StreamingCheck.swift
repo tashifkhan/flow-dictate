@@ -14,6 +14,9 @@ private final class CheckStreamingField: StreamingTextField {
     /// Paragraph separators before the caret that the selection range leaves out, as
     /// Chromium does once a rich editor already holds paragraphs.
     var uncountedSeparators = 0
+    /// Parses pasted text the way Markdown composers do: a blank line becomes one
+    /// paragraph break and "- " list markers disappear into list items.
+    var parsesMarkdown = false
     init(_ text: String, location: Int? = nil, length: Int = 0) {
         state = .init(text: text, location: location ?? text.utf16.count, length: length)
     }
@@ -24,6 +27,11 @@ private final class CheckStreamingField: StreamingTextField {
     func replace(location: Int, length: Int, with text: String) -> Bool {
         guard !refusesEdits else { return false }
         let location = location + uncountedSeparators
+        var text = text
+        if parsesMarkdown {
+            while text.contains("\n\n") { text = text.replacingOccurrences(of: "\n\n", with: "\n") }
+            text = text.replacingOccurrences(of: "(?m)^- ", with: "", options: .regularExpression)
+        }
         let value = NSMutableString(string: state.text)
         value.replaceCharacters(in: NSRange(location: location, length: length), with: text)
         var next = StreamingFieldState(text: value as String, location: location + text.utf16.count, length: 0)
@@ -97,6 +105,26 @@ enum StreamingCheck {
         let draftedRestored = await draftedStream.rollback()
         check(draftedRestored && drafted.state.text == "First paragraph.\nSecond paragraph.",
               "cancelling after existing paragraphs restores the draft")
+
+        let composer = CheckStreamingField("Replay the audio:")
+        composer.canExposeEmptyParagraph = true
+        composer.parsesMarkdown = true
+        let composerStream = StreamingInsertion(field: composer)!
+        let composerFirst = await composerStream.update("\n- Why do we have")
+        let composerNext = await composerStream.update("\n- Why do we have two buttons?\n\nPlease remove")
+        let composerFinal = await composerStream.update("\n- Why do we have two buttons?\n\nPlease remove the purple one.")
+        check(composerFirst && composerNext && composerFinal
+              && composer.state.text == "Replay the audio:\nWhy do we have two buttons?\nPlease remove the purple one.",
+              "a composer that parses pasted Markdown keeps receiving the whole answer")
+        let composerRestored = await composerStream.rollback()
+        check(composerRestored && composer.state.text == "Replay the audio:", "cancelling restores a Markdown composer")
+        let reworded = CheckStreamingField("Note.")
+        reworded.canExposeEmptyParagraph = true
+        let rewordedStream = StreamingInsertion(field: reworded)!
+        _ = await rewordedStream.update(" First")
+        reworded.state.text = "Note. Fist"
+        let rewordedNext = await rewordedStream.update(" First words")
+        check(!rewordedNext && reworded.state.text == "Note. Fist", "a draft the user edited is never overwritten")
 
         let rich = CheckStreamingField("")
         rich.canExposeEmptyParagraph = true
