@@ -28,7 +28,7 @@ final class AppEnvironment {
     private(set) var hasMicrophone = Permissions.hasMicrophone
 
     /// True until Flow can both hear you and type for you.
-    var needsSetup: Bool { !hasAccessibility || !hasMicrophone }
+    var needsSetup: Bool { !Settings.isDemo && (!hasAccessibility || !hasMicrophone) }
 
     /// Re-reads permission state; the setup screen polls this while it is open.
     func refreshPermissionState() {
@@ -47,6 +47,8 @@ final class AppEnvironment {
     /// Selected in the main window; also where `flowclone://note` lands.
     var openNoteID: UUID?
     var openSettingsPane: SettingsPane?
+    /// Set by the README screenshot run to move the main window between pages.
+    var openSidebarItem: SidebarItem?
     /// Highlighted in the history browser, so ⇧⌘V knows what to re-insert.
     var selectedDictationID: UUID?
 

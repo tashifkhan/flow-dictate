@@ -71,7 +71,7 @@ final class PanelPresenter {
     }
 
     var isVisible: Bool { panel?.isVisible == true }
-    var diagnosticWindow: NSWindow? { CommandLine.arguments.contains("--check-panel") ? panel : nil }
+    var diagnosticWindow: NSWindow? { CommandLine.arguments.contains("--check-panel") || Settings.isDemo ? panel : nil }
 
     private func make() -> FloatingPanel {
         let panel = FloatingPanel(contentRect: NSRect(origin: .zero, size: size))
