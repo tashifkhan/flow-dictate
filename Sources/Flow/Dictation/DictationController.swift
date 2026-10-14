@@ -748,7 +748,7 @@ final class DictationController {
 
     /// Opt-in HUD diagnostic, without microphone capture or field insertion.
     func previewPanelForCheck(_ phase: DictationPhase, text: String = "", toField: Bool = false) async {
-        guard CommandLine.arguments.contains("--check-panel") else { return }
+        guard CommandLine.arguments.contains("--check-panel") || Settings.isDemo else { return }
         self.phase = phase
         isStreamingToField = toField
         if phase == .processing { await receivePreview(text, token: resultsToken) }

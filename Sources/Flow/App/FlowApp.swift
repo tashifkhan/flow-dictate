@@ -22,7 +22,7 @@ struct FlowApp: App {
         .windowResizability(.contentMinSize)
         // A menu bar accessory has no window at launch, which leaves a half-configured
         // Flow with no way to say what is wrong. Show the window until setup is done.
-        .defaultLaunchBehavior(Settings.isDiagnosticRun ? .suppressed
+        .defaultLaunchBehavior(Settings.isDemo ? .presented : Settings.isDiagnosticRun ? .suppressed
                                : AppEnvironment.shared.needsSetup ? .presented : .automatic)
         .commands { FlowCommands(env: env) }
 
@@ -46,6 +46,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // Flow owns a global hotkey even with every window hidden.
             ProcessInfo.processInfo.disableAutomaticTermination("Flow waits for the dictation hotkey")
             if CommandLine.arguments.contains("--self-check") { SelfCheck.run() }
+            if let index = CommandLine.arguments.firstIndex(of: "--demo-screenshots"),
+               CommandLine.arguments.indices.contains(index + 1) {
+                let directory = CommandLine.arguments[index + 1]
+                guard Settings.isDemo else {
+                    print("--demo-screenshots runs only in a copy whose bundle ID is sh.taf.flow.demo. Use scripts/screenshots.sh.")
+                    exit(2)
+                }
+                Task { await DemoScreenshots.run(directory: directory) }
+                return
+            }
             if CommandLine.arguments.contains("--print-prompts") {
                 print(PromptLibrary.sample())
                 exit(0)

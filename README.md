@@ -2,6 +2,20 @@
 
 A macOS dictation app inspired by Wispr Flow. Press a key, speak, and Flow transcribes your speech, cleans it up, and types it at your cursor. It uses Apple's on-device models by default. Cloud models are optional and use your own API keys.
 
+![Flow's main window, listing recent dictations with a details panel for the selected one](docs/images/dictations.png)
+
+<p>
+  <img src="docs/images/pill-recording.png" width="193" alt="The recording pill, with a waveform, a timer, and a cancel button">
+  &nbsp;
+  <img src="docs/images/pill-streaming.png" width="353" alt="The pill showing a cloud model's answer as it streams in">
+  &nbsp;
+  <img src="docs/images/pill-inserted.png" width="77" alt="The pill's tick after the text is inserted">
+</p>
+
+The pill while you speak, while a model writes the answer, and once the text is in.
+
+All screenshots use made-up data. `scripts/screenshots.sh` regenerates them.
+
 ## Install
 
 Flow needs macOS 26 or newer and a Swift 6 toolchain.
@@ -95,6 +109,8 @@ Only one Flow process can own the shortcut. If the installed app is running and 
 
 ## Vocabulary
 
+![Settings › Vocabulary, with personal details, a custom GitHub field, and custom words with meanings](docs/images/vocabulary.png)
+
 Settings › Vocabulary holds what Flow should know about you and your words.
 
 - **Personal details.** Name, email, phone, company, and address, plus fields you add with a name, a description, and a value. Say "add my email here" to insert the saved value without a model call, or say "my email" inside a sentence. A field named GitHub answers to "my GitHub". A detail reaches a model only when you say it, unless you tick Always tell the model. Then every cleanup request includes it, as "GitHub, personal profile link: github.com/you", with an instruction never to add it unprompted.
@@ -105,6 +121,8 @@ Settings › Vocabulary holds what Flow should know about you and your words.
 Details stay on this Mac. A detail you say inside a sentence becomes part of what the cloud model receives.
 
 ## Cloud models
+
+![Settings › Models, showing the route from speech to your cursor and a one-pass Gemini config](docs/images/models.png)
 
 Settings › Models starts with editable OpenAI, Google, and Anthropic providers. You can add more, each with its own name, API format, base URL, and key. Keys are stored in the macOS Keychain. You type every model ID yourself. Anthropic's Messages API takes no audio, so Anthropic-format providers can only refine text.
 
@@ -133,6 +151,8 @@ Request records keep an output word count but no transcript, audio, request or r
 Every prompt Flow sends is a Markdown file in [`Prompts/`](Prompts/README.md), one per job, such as `cloud-cleanup.md` and `apple-intelligence-cleanup.md`. `{placeholder}` slots are filled at run time, like a Python format string. Edit a file and rebuild to change what the models see. `Flow --print-prompts` prints the rendered prompts for a sample dictation, and the self-check fails if a prompt is missing, unused, or has a slot the code does not fill.
 
 ## Statistics
+
+![The Statistics page, with a year of activity and the last 30 days of words](docs/images/statistics.png)
 
 Sidebar › Statistics shows a contribution graph of the past year, with streaks and your best day. A range picker (Today, 7 days, 30 days, Year, All time) scopes the rest:
 
@@ -181,9 +201,10 @@ scripts/check.sh             # build without warnings, then the self-check and s
 scripts/check-cloud.sh       # provider protocols against a localhost fixture
 FLOW_ELECTRON_PATH=/path/to/Electron scripts/check-electron.sh
 FLOW_FIREFOX_APP="/Applications/Firefox Nightly.app" scripts/check-firefox.sh
+scripts/screenshots.sh       # README screenshots, from a demo copy of the app
 ```
 
-The Electron and Firefox checks bring a test window to the front and stream into it, so leave the Mac alone while they run. The Firefox check uses a throwaway profile and refuses to run while that browser is open.
+The Electron and Firefox checks bring a test window to the front and stream into it, so leave the Mac alone while they run. `screenshots.sh` runs a copy of the app renamed to `sh.taf.flow.demo`, so it has its own settings, keeps its made-up history in memory, and never reads your dictations or Keychain keys. The Firefox check uses a throwaway profile and refuses to run while that browser is open.
 
 ### Layout
 

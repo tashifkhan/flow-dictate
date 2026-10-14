@@ -90,7 +90,11 @@ final class Settings {
     static let shared = Settings()
     static let isDiagnosticRun = ["--self-check", "--check-streaming", "--check-cloud-http", "--probe-focus",
                                   "--check-insertion", "--check-cloud-live", "--check-electron-insertion",
-                                  "--check-target-insertion", "--check-panel", "--print-prompts"].contains(where: CommandLine.arguments.contains)
+                                  "--check-target-insertion", "--check-panel", "--print-prompts", "--demo-screenshots"].contains(where: CommandLine.arguments.contains)
+    /// README screenshots with made-up data. Only a copy renamed to `sh.taf.flow.demo`
+    /// may run it, so it has its own defaults and never sees the real history or keys.
+    static let isDemo = CommandLine.arguments.contains("--demo-screenshots")
+        && Bundle.main.bundleIdentifier == "sh.taf.flow.demo"
 
     private let defaults = UserDefaults.standard
 
@@ -205,6 +209,8 @@ final class Settings {
     func flushKeys() {
         keyFlush?.cancel()
         keyFlush = nil
+        // The demo never writes to the Keychain.
+        if Self.isDemo { pendingKeys = [:]; return }
         for (id, key) in pendingKeys { CloudKeys.write(key, id: id.uuidString) }
         pendingKeys = [:]
     }

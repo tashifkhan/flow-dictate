@@ -42,6 +42,9 @@ struct MainWindow: View {
         .onChange(of: env.openSettingsPane) { _, pane in
             if let pane { selection = .settings(pane) }
         }
+        .onChange(of: env.openSidebarItem) { _, item in
+            if let item { selection = item }
+        }
         .onChange(of: mode) { _, new in storedMode = new.rawValue }
     }
 

@@ -50,6 +50,11 @@ final class Library {
 
     /// Falls back to an in-memory store so a broken database never stops you dictating.
     static func make() -> Library {
+        if Settings.isDemo {
+            // A year of demo history, so retention must not trim it.
+            Settings.shared.retention = .forever
+            return Library(store: DemoScreenshots.store())
+        }
         do {
             return Library(store: try SQLiteStore(url: try SQLiteStore.defaultURL()))
         } catch {
