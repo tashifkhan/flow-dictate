@@ -1,382 +1,153 @@
 # Flow
 
-A macOS dictation app inspired by Wispr Flow. Hold a key, speak, release it,
-and Flow transcribes, cleans up, and inserts the text at your cursor. It uses Apple's
-on-device models by default. Cloud models are optional and need your own API keys.
+A macOS dictation app inspired by Wispr Flow. Press a key, speak, and Flow transcribes your speech, cleans it up, and types it at your cursor. It uses Apple's on-device models by default. Cloud models are optional and use your own API keys.
 
 ## Install
 
-Flow requires macOS 26 or newer and a Swift 6 toolchain. Run this single command:
+Flow needs macOS 26 or newer and a Swift 6 toolchain.
 
 ```sh
 bash <(curl -fsSL https://raw.githubusercontent.com/tashifkhan/flow-dictate/main/scripts/bootstrap.sh)
 ```
 
-The command downloads `scripts/bootstrap.sh` from `main`, clones the repository, builds
-the app, installs it in `/Applications`, and opens it. Read the script first if you do
-not want to execute remote code directly.
+This downloads `scripts/bootstrap.sh` from `main`, clones the repository, builds the app, installs it in `/Applications`, and opens it. Read the script first if you would rather not run remote code.
 
-From an existing checkout, run:
+From a checkout:
 
 ```sh
-scripts/make-cert.sh
-scripts/install.sh
+scripts/make-cert.sh   # once per Mac
+scripts/install.sh     # again after every pull
 ```
 
-The scripts create a stable local signing certificate, build a release app, replace
-`/Applications/Flow.app`, verify its signature, and open it. macOS then asks for
-Microphone and Accessibility access. Grant both permissions from Flow's setup window.
+`make-cert.sh` creates the local signing certificate that keeps permission grants working across rebuilds (see [Permissions](#permissions)). `install.sh` builds a release app, replaces `/Applications/Flow.app`, checks its signature, and opens it.
 
-Use the same command after pulling a new version:
+## Using Flow
 
-```sh
-scripts/install.sh
-```
+- Press the dictation shortcut anywhere, speak, and release (or press again in Start and stop mode). The default is `fn`. Change it in Settings › General. It can be a modifier on its own, such as right ⌥, or a key with at least one modifier, such as ⌃⌥Space. Flow refuses a bare letter, because a global shortcut would fire while you type.
+- ⌘Enter while recording stops and inserts. Flow consumes the shortcut so the app underneath does not also send the message.
+- Escape while recording cancels.
+- ⇧⌘V inserts the selected history entry at the cursor.
+- ⇧⌘N makes a new note and ⇧⌘D starts a dictation, both inside Flow.
+- Spoken commands work during dictation: "scratch that", "replace X with Y", "new paragraph".
 
-Do not skip `scripts/make-cert.sh` on a development Mac. Without its stable local
-certificate, macOS treats each build as a different app and the permission grants stop
-working. See [Permissions that will not stick](#permissions-that-will-not-stick).
+Flow lives in the menu bar. It shows in the Dock and Command-Tab while one of its windows is open, and Settings › General can keep the Dock icon all the time. Until both permissions are granted, Flow opens a Setup screen at launch that shows what is missing. Later, open the window from the menu bar icon › Flow Window.
 
-## Build and run
+The `flowclone://` URL scheme works from Raycast or Shortcuts: `toggle`, `history`, `note`, `models`, and `vocabulary`.
 
-SwiftPM is the source of truth. The build script compiles the executable, assembles the
-app bundle, and signs it:
+## Permissions
 
-```sh
-scripts/run.sh               # debug build and launch
-scripts/run.sh release       # release build and launch
-scripts/build.sh debug       # build without launching
-```
+| Permission | Used for | Where |
+| --- | --- | --- |
+| Accessibility | Watching the dictation shortcut and typing at your cursor | System Settings › Privacy & Security › Accessibility |
+| Microphone | Recording while you dictate | Prompted on first dictation |
 
-`scripts/build.sh` signs with the local `Flow Dev` identity created by
-`scripts/make-cert.sh` (falling back to ad-hoc, with a warning,
-if you have not run it).
+macOS has no way to grant Accessibility from a script, so Flow opens the prompt and reminds you in the menu bar until you grant it. Quit and reopen Flow after granting it, because Flow installs its keyboard event tap at launch.
 
-Flow appears in the Dock and Command-Tab while a window is open or minimized.
-After the last window closes, it stays in the menu bar. General settings can keep
-the Dock icon visible all the time.
+### When a permission will not stick
 
-### Verification
+If Flow still says it lacks Accessibility after you turn it on, the build is probably signed ad hoc. An ad-hoc signature's designated requirement is a hash of the binary, so every rebuild looks like a different app to macOS, and the old grant no longer applies even though the switch looks on.
 
-```sh
-scripts/check.sh
-scripts/check-cloud.sh        # localhost provider protocol fixtures
-FLOW_ELECTRON_PATH=/path/to/Electron scripts/check-electron.sh # isolated desktop editor fixture
-FLOW_FIREFOX_APP="/Applications/Firefox Nightly.app" scripts/check-firefox.sh # Gemini-style composer, throwaway profile
-```
-
-Checks covering the SQLite store, retention, search, record derivation, statistics,
-daily aggregates, hotkey encoding, lexicon matching, app-aware dictation,
-custom-model handling, and availability copy. Exits non-zero on failure.
-
-## Where the app is
-
-Flow is a menu bar accessory, so there is no dock icon. Until both permissions are
-granted it opens its window at launch onto a Setup screen that shows exactly what is
-missing, what the transcriber and speech model are doing, and a button to try a
-dictation. Once setup is done the window stops appearing on its own; open it from the
-menu bar waveform icon › Flow Window, or `flowclone://history`.
-
-## Permissions that will not stick
-
-If you grant Accessibility, quit, reopen, and Flow still says it does not have it, with
-the toggle clearly on in System Settings, this is why.
-
-An ad-hoc signature (`codesign -s -`) has a designated requirement of
-`cdhash H"…"`, a hash of the binary's contents. Every rebuild changes it, so macOS
-treats each build as a different app. The TCC grant is still pinned to the old hash, so
-`AXIsProcessTrusted()` returns false while the switch sits there looking enabled.
-
-`scripts/make-cert.sh` fixes it by creating a self-signed identity in its own keychain (no
-login-keychain password needed). The requirement becomes:
-
-```
-identifier "sh.taf.flow" and certificate leaf = H"…"
-```
-
-which is keyed to the certificate, not the binary, so it survives rebuilds. After
-switching, clear the stale entries once:
+`scripts/make-cert.sh` creates a self-signed identity in its own keychain, so no login-keychain password is needed. The requirement becomes `identifier "sh.taf.flow" and certificate leaf = H"…"`, which survives rebuilds. After switching, clear the stale grants once and grant them again:
 
 ```sh
 tccutil reset Accessibility sh.taf.flow
 tccutil reset Microphone sh.taf.flow
 ```
 
-Then grant them again. They stick from then on.
+## Cleanup
 
-## Permissions
+Flow cleans the whole thought after you stop speaking. It removes filler, false starts, stutters, and repeats, applies your corrections ("Thursday, sorry, Friday" becomes "Friday"), and turns spoken structure into paragraphs and lists. It keeps every fact, name, number, and constraint instead of summarizing. Finished text never contains an em dash, even when a model ignores the instruction.
 
-Flow asks for two things, once each. Both are required before it can do anything useful.
+Cleanup adapts to where the text goes. Chat apps keep a casual tone, email gets complete sentences, and developer tools get technical vocabulary. This also works for known sites in a browser, such as Gmail, Slack, WhatsApp, GitHub, GitLab, Google Docs, and Notion. Flow classifies the site on your Mac, then discards the page title and URL. Neither goes to history or to a model.
 
-| Permission | Why | Where |
-| --- | --- | --- |
-| **Accessibility** | Watch the push-to-talk key, and type at your cursor | System Settings › Privacy & Security › Accessibility |
-| **Microphone** | Capture audio while you hold the key | Prompted on first dictation |
+Settings › General › Language has a Hinglish mode. It uses the Hindi speech model, accepts Hindi mixed with English, and writes Hindi in Roman script. English product names and technical terms stay in English. Without Apple Intelligence, a local transliteration still keeps the result in Latin characters.
 
-Accessibility must be granted manually. macOS gives no way to script it. Flow triggers
-the prompt on first launch and nags in the menu bar until it is granted. **After
-granting it, quit and relaunch Flow.** Event taps are only installed at startup.
+## Streaming
 
-## Using it
+With a cloud model that streams, text appears in the focused field as the model writes it.
 
-- **Hold `fn`** anywhere in macOS, talk, let go. Settings › General › Hold to talk
-  rebinds it. Pick a preset, or click the field and press any modifier (fn, right ⌥,
-  right ⌃…) or any key with at least one modifier (⌃⌥Space). A bare letter is refused.
-  It is a global watcher and would fire while you type.
-- **⌘Enter** while recording stops and inserts. Flow consumes the shortcut
-  so the foreground app cannot also send the message.
-- **Escape** while recording cancels without inserting
-- **⇧⌘V** re-inserts the selected history entry at the cursor
-- **⇧⌘N** new note, **⇧⌘D** start a dictation, both in-app
-- `flowclone://toggle`, `flowclone://history`, `flowclone://note` for Raycast quicklinks
+- Native Mac fields are edited through Accessibility. Browser and Electron fields get a real paste per chunk, so the editor's own input handling runs. Flow puts your clipboard back after each paste.
+- Before each update, Flow checks that the same field still has focus and holds the draft it wrote. If you click away or edit the draft, Flow stops writing to the field and shows the rest in the pill.
+- The pill shows live text only when there is no editable field or the field refused an edit. Once shown, it stays up for at least 0.9 seconds.
+- Escape restores your original text while the draft is unchanged and still focused.
+- The final result replaces the draft once cleanup, replacements, and list numbering are applied.
 
-Optional, off by default: a dock icon, a notification when text lands, and a trained
-custom speech model (Settings › Vocabulary).
+When streaming finishes, the circle draws a tick. If the text went to the clipboard, the tick turns into a button that copies it again.
 
-### Cloud models
+Some editors report their contents in ways Flow has to account for:
 
-Settings › Models starts with editable OpenAI, Google, and Anthropic provider profiles.
-You can add more providers, give each any name, choose its API format, and set its base
-URL and key. Keys go in macOS Keychain. Add models under each provider and choose
-one-pass audio, transcription, or refinement when you add each one. Model IDs are entered by you; Flow does not preselect
-one. Anthropic's Messages API does not accept audio, so Anthropic-format providers
-work for refinement only.
+- Firefox reports an empty composer's placeholder, such as Gemini's "Ask Gemini", as its text. When the first paste leaves only the draft, Flow treats the earlier text as a placeholder and takes over the editor.
+- Rich editors with existing paragraphs can leave line breaks out of their cursor offsets. Flow finds the draft in the field's text instead.
+- Composers that parse pasted Markdown, such as T3 Code's, rewrite blank lines and "- " lines. Flow accepts the rewrite when the words match the draft and the text around it is untouched.
 
-Cloud configs form an ordered ladder. A one-pass config finishes text directly from
-recorded audio. A two-pass config transcribes first and cleans the result second;
-either step can use this Mac. Flow tries the next config when one fails. With parallel
-results enabled, all configs run together and the highest-ranked success wins.
-Local Apple Intelligence cleanup runs alongside the cloud ladder and remains available
-as a saved alternative.
+Each time Flow stops writing to a field, it logs why under `sh.taf.flow` category `stream`, with lengths and offsets but never the text.
 
-The pipeline is model-agnostic within the supported provider protocols. Model IDs,
-endpoints, and each two-pass stage are user choices. One-pass audio models and
-text refiners use the same cleanup policy for fillers, repairs, formatting, and
-fact preservation. Flow does not select a special Rambler model or change the
-ladder automatically. See the [Rambler research and behavior report](docs/research/pixel-rambler.md).
+## Insertion without streaming
 
-OpenAI-compatible transcriber models can choose **Audio transcription API** or
-**Multimodal chat API** under Two-pass audio input. Existing models keep their
-previous audio endpoint. This supports general audio models in either pipeline
-without guessing capabilities from the model's name.
+Flow presses the app's own Edit › Paste when it has exactly one plain ⌘V item, and sends a ⌘V keystroke otherwise. It waits for the shortcut's modifier keys to come up first. The temporary clipboard item is marked transient and local to this Mac, and Flow restores your previous clipboard 600 ms later unless you copied something in between. Fields marked as protected content are treated like password fields.
 
-History rows show the text, the app it went to, how long you spoke, how long the text
-took to be ready, and the cloud cost. Hovering a row shows Copy, Insert at cursor, and
-Pin. Selecting a dictation opens a details panel on the right (toolbar › Details) with
-**Inserted**, **Raw**, and **Versions** tabs. Raw shows untouched Apple speech
-recognition. Versions contains local cleanup and cloud results, with a copy button for
-each. Late results attach to the recording that started them. Old records retain what
-was saved; they cannot reconstruct missing Apple raw text or timing. Finished text
-cannot contain em dashes, even when a model ignores the prompt. Raw remains unchanged.
+If no editable field has focus, Flow leaves the text on the clipboard and says so. Two exceptions:
 
-The details panel also splits the dictation into speaking time and processing time
-(from recording stop to final text) and lists every cloud request, including failed
-configs and retries. Each cloud version shows the requests for its own config.
+- Zed draws its editor on the GPU and exposes only its window to Accessibility, so Flow treats a focused Zed window as the editor and pastes there.
+- Electron apps such as T3 Code, Slack, and VS Code expose no focused field until an assistive app asks, so Flow sets `AXManualAccessibility` on each one as it comes to the front.
 
-Request details include provider-reported input, output, reasoning, cache and audio
-usage, request duration, first visible streamed-token latency, and words per minute
-over the whole request. The per-model speed divides returned words by full request
-time in minutes, including upload, initial latency, and response processing. Stream generation speed remains a separate
-diagnostic that excludes the initial wait. Non-streamed replies and one-chunk replies
-cannot report that diagnostic. Usage is
-never inferred from word counts. USD cost estimates use exact provider/model prices
-from `models.dev/api.json`, cached daily and saved with each request. Missing exact
-Google Transcribe entries use official rates verified on October 1, 2026, with a
-source URL and verification date. Updated catalog prices take precedence. This
-fallback applies only to the direct Google host. Compatible
-proxies can set a models.dev provider ID in the provider editor. Unknown prices or
-usage stay unknown and are counted separately from known spend. Accounting metadata
-stores an output word count but no transcript, audio, request body, response body,
-or API key. It survives transcript deletion and retention so cost totals remain available.
+Only one Flow process can own the shortcut. If the installed app is running and a second copy starts from a build folder, the second copy quits before it records anything.
 
-Saved keys load in the background. If macOS needs Keychain authorization, the window
-and local dictation stay available and the Models pane shows the pending state.
-Approve Flow in the macOS dialog, or use **Reload saved keys from Keychain** in Models
-after a denied request. Loading an existing key does not rewrite it.
+## Vocabulary
 
-Voice commands ride the same round trip as ordinary dictation: "scratch that",
-"replace X with Y", "new paragraph".
+Settings › Vocabulary holds what Flow should know about you and your words.
 
-Finished writing streams into the focused field as the model generates it. Native
-fields use Accessibility edits; readable browser and Electron fields use real
-paste events so the editor receives each complete chunk. Flow restores the clipboard
-after the field confirms the edit. Flow checks the field and caret before
-each update. If you move focus or edit the text, it stops updating the field and
-shows the remaining response in the pill. The pill appears only when no field can be
-tracked or the field refuses an edit, never for a field that is slow but working.
-Once it appears it stays up for at least 0.9 s before it collapses. Firefox reports an empty composer's CSS placeholder, such as Gemini's "Ask Gemini",
-as its text. When the first paste leaves only the draft, Flow treats that text as a
-placeholder and takes over the whole editor. Rich editors that already hold paragraphs can skip the separators in their
-selection offsets; Flow finds the draft in the field's text and keeps streaming
-after the existing paragraphs. Composers that parse pasted Markdown, like T3 Code's,
-turn a blank line into one paragraph break and "- " lines into lists. Flow accepts
-that rewrite when the words match the draft exactly and the text around it is
-untouched. Each detach is logged with lengths and offsets, never the text, under
-`sh.taf.flow` category `stream`. Escape restores the original selection
-when the draft is still unchanged and focused. The final result reconciles the draft
-with cleanup, replacement rules, and list numbering.
+- **Personal details.** Name, email, phone, company, and address, plus fields you add with a name, a description, and a value. Say "add my email here" to insert the saved value without a model call, or say "my email" inside a sentence. A field named GitHub answers to "my GitHub". A detail reaches a model only when you say it, unless you tick Always tell the model. Then every cleanup request includes it, as "GitHub, personal profile link: github.com/you", with an instruction never to add it unprompted.
+- **Custom words.** Names and terms the recognizer gets wrong. Each word can have a meaning, which reaches the prompt as "CCADB (Mozilla's Common CA Database)" when you say the word. A single-word entry also fixes an unambiguous recognition error within one letter.
+- **Replacements.** "Heard as" and "Write instead" pairs. They run locally, including when cleanup is off, and a replacement never triggers another one.
+- **Custom speech model.** An opt-in model trained on your words and past corrections. It only attaches to `DictationTranscriber`, so turning it on trades the better `SpeechTranscriber` for the fallback. Try the word list first.
 
-If the field cannot support tracked updates, the pill expands to show the live
-response and Flow uses its existing paste path once generation finishes. With no
-editable field, it copies the finished response and collapses to the clipboard icon.
-The progress circle stays in place throughout generation. Fallback text appears
-in a fixed preview above it, with no per-token scrolling or window resizing.
-Both endings draw a tick. Successful insertion stops there; clipboard delivery then
-turns the tick into a copy button that can copy the result again. Both use the circle regardless of panel size.
-Streaming is automatic per provider, endpoint, and model. If a server rejects
-streaming or returns ordinary JSON, Flow remembers that during the session and
-uses complete responses for that route. Settings > Cloud > provider > Streaming
-can turn streaming Off explicitly. Recheck streaming support clears the learned
-support for that provider. Optional usage or reasoning parameters that a server
-rejects do not prevent it from streaming text. Complete responses use the regular
-insertion path, and the pill expands only when partial text actually arrives.
+Details stay on this Mac. A detail you say inside a sentence becomes part of what the cloud model receives.
 
-Settings › Vocabulary includes saved name, email, phone, company, and address fields.
-Say "add my email here" to insert your saved email, or include "my email" in a sentence
-to expand it there. Direct requests insert the exact saved value without a model call.
-Empty details stay as spoken. Replacements under "Heard as" and
-"Write instead" run locally, including when cleanup is disabled. All saved rules
-apply, and replacement values do not trigger further rules. A single-word vocabulary
-entry can also fix an unambiguous recognition error within one letter edit. Add an
-explicit replacement for other pronunciations or names split into multiple words.
-Details stay in local preferences. Expanded details in a sentence become part of
-the input when cloud cleanup runs. Apple raw transcription stays unchanged in history.
+## Cloud models
 
-Add a field adds your own detail with a name, a description, and a value. A field
-named GitHub answers to "my GitHub" exactly like the built-in ones, and a name that
-already starts with "my" is not doubled. A field reaches a model only when you say
-it, unless you tick Always tell the model. Then every local and cloud cleanup
-request carries a line such as "About the speaker: their GitHub (personal profile
-link) is github.com/you", with an instruction to use it for spelling and references
-and never to add it unprompted. Each custom word has its own Meaning box, and the
-add row takes a meaning for a single new word. A word with a meaning reaches the
-prompt as "CCADB (Mozilla's Common CA Database)" when it appears in a dictation. `flowclone://vocabulary` opens this page.
+Settings › Models starts with editable OpenAI, Google, and Anthropic providers. You can add more, each with its own name, API format, base URL, and key. Keys are stored in the macOS Keychain. You type every model ID yourself. Anthropic's Messages API takes no audio, so Anthropic-format providers can only refine text.
 
-Every prompt Flow sends lives as Markdown in [`Prompts/`](Prompts/README.md), one
-file per job, such as `cloud-cleanup.md` and `apple-intelligence-cleanup.md`.
-`{placeholder}` slots are filled at run time like a Python format string. Edit a
-file and rebuild to change what the models see, and run `Flow --print-prompts` to
-read the result. The self-check fails if a prompt is missing, unused, or has a slot
-the code does not fill.
+Models are arranged as an ordered list of configs, and Flow tries the next one when a config fails.
 
-If no editable text field has focus, Flow leaves the finished text on the clipboard
-and says "Copied to clipboard" in the panel. It does not send a paste shortcut to the
-frontmost window. Zed is the exception: its GPU-drawn editor exposes no text
-element to Accessibility (the focused element is the window itself), so Flow
-treats a focused Zed window as the editor and always pastes there. Electron apps
-(T3 Code, Slack, VS Code) report no focused field at all until an assistive app asks
-for their accessibility tree, so Flow sets `AXManualAccessibility` on each one as it
-comes to the front.
+- A one-pass config sends the recording and gets finished text back.
+- A two-pass config transcribes first and refines second. Either step can run on this Mac.
+- With parallel results on, every config runs at once and the highest-ranked success wins.
 
-Pasting follows Sotto's rules. Flow presses the app's own Edit › Paste when there is
-exactly one plain ⌘V item, and sends a ⌘V keystroke only when that menu press was
-never sent. It waits for the hotkey's modifiers to come up first, marks the temporary
-clipboard item transient and local to this Mac, and puts your old clipboard back only
-if you have not copied something since. Fields inside web pages always get a paste,
-and fields marked as protected content are treated like password fields.
+Apple Intelligence cleanup runs alongside and stays available as an alternative version. OpenAI-compatible transcription models can use either the audio transcription API or the multimodal chat API. For background on one-pass cleanup, see the [Rambler research notes](docs/research/pixel-rambler.md).
 
-Only one Flow process may own the global hotkey. If the installed app is already
-running and a second copy launches from a build directory, the newer copy exits before
-it can record or insert anything.
+Streaming is automatic for each provider, endpoint, and model. If a server rejects streaming or answers with plain JSON, Flow remembers that for the session. Each provider has a Streaming setting to turn it off, and Recheck streaming support forgets what Flow learned.
 
-Flow cleans the whole spoken thought after recording ends. It removes filler, false
-starts, stutters, and accidental repetition; applies the speaker's latest explicit
-correction; and turns clear spoken structure into paragraphs or lists. It keeps distinct
-ideas, facts, names, numbers, examples, and constraints instead of summarizing them.
+If macOS needs your approval to read a saved key, dictation on this Mac keeps working and Models shows the pending state. Approve Flow in the dialog, or use Reload saved keys from Keychain after a denial.
 
-Cleanup and recognition also adapt to the destination. Chat apps keep a casual tone,
-email gets complete polished sentences, and developer tools receive extra technical
-vocabulary. This works for recognized sites inside a browser, including Gmail, Slack,
-WhatsApp, GitHub, GitLab, Google Docs, and Notion. Flow classifies the site on your Mac
-and discards the page title and URL; neither is added to dictation history or passed to
-the language model.
+### History and costs
 
-Settings › General › Language also has a Hinglish mode. It listens with the Hindi
-speech model, accepts Hindi mixed with English, and writes Hindi words in simple Roman
-script instead of Devanagari. English product names and technical terms stay in English.
-If Apple Intelligence cleanup is unavailable, a local transliteration fallback still
-keeps the result in Latin characters.
+Each history row shows the text, its app, speaking time, processing time, and cloud cost. The details panel has Inserted, Raw, and Versions tabs. Raw is Apple's untouched transcription. Versions holds the local and cloud results, and late results attach to the dictation that started them.
 
-## What's built
+The panel also lists every cloud request, including failures and retries, with provider-reported tokens, request time, time to the first streamed text, and words per minute over the whole request. Flow never estimates usage from word counts. Cost estimates use exact prices from `models.dev/api.json`, cached daily and saved with each request. Google transcription models missing from that catalog use official rates checked on October 1, 2026, on Google's own host only. A compatible proxy can name its models.dev provider in the provider editor. Unknown prices stay unknown and are counted apart from known spend.
 
-| Phase | State |
-| --- | --- |
-| **P0** menu bar skeleton, hotkey, capture, transcription | done |
-| **P1** insertion at cursor, cleanup, command decisions | done |
-| **P2** panel, waveform, liquid glass, three states | done |
-| **P3** history, lexicon, AX direct-insert, retention | done |
-| **P4** main window, list/grid, scratchpad, summaries | done |
-| **P5** login item, URL scheme, DMG packaging | done |
-| **P5** custom `SFSpeechLanguageModel` training | done, opt-in |
-| **P5** notarization | scripted; needs your Developer ID to run |
+Request records keep an output word count but no transcript, audio, request or response body, or API key, so cost totals survive deleting transcripts.
 
-### Layout
+## Prompts
 
-```
-Sources/Flow/
-  App/                   scenes, app delegate, commands
-  Diagnostics/           application-level self-checks
-  Dictation/             capture, speech pipeline, cleanup, lexicon, controller
-  Insertion/             AX + paste inserter, front-app detection, permissions
-  Hotkey/                push-to-talk event tap
-  Panel/                 non-activating NSPanel, waveform, levels
-  Store/                 records, HistoryStore protocol, SQLite + memory stores
-  Window/                main window, browsers, note editor, settings, menu bar
-  Support/               settings, login item, environment, local API
-
-AppBundle/               Info.plist and signing entitlements
-scripts/                 build, run, install, verification, certificate, and packaging tools
-```
+Every prompt Flow sends is a Markdown file in [`Prompts/`](Prompts/README.md), one per job, such as `cloud-cleanup.md` and `apple-intelligence-cleanup.md`. `{placeholder}` slots are filled at run time, like a Python format string. Edit a file and rebuild to change what the models see. `Flow --print-prompts` prints the rendered prompts for a sample dictation, and the self-check fails if a prompt is missing, unused, or has a slot the code does not fill.
 
 ## Statistics
 
-Sidebar › Statistics is one page. The top card is a contribution graph of the trailing
-year, with a tooltip on each day and your current streak, longest streak, and best
-day. Under it, a range picker (Today, 7 days, 30 days, Year, All time) scopes everything
-below:
+Sidebar › Statistics shows a contribution graph of the past year, with streaks and your best day. A range picker (Today, 7 days, 30 days, Year, All time) scopes the rest:
 
-- Words, dictations, end-to-end words per minute, and time saved, each with its change
-  against the previous period of the same length and a sparkline.
-- A words, dictations, or minutes chart per hour, day, week, or month, with a hover
-  readout.
-- Words by hour of day and the apps your words went to.
-- When cloud models have been used: spend, requests, success rate, and median latency;
-  spend or requests over time stacked by model (click a bar to filter the requests);
-  and sortable per-model and per-request tables. Selecting a request shows its tokens,
-  prices, and timing.
+- Words, dictations, words per minute, and time saved, each compared with the previous period.
+- A chart of words, dictations, or minutes by hour, day, week, or month.
+- Words by hour of day and by app.
+- Cloud spend, requests, success rate, and latency, with per-model and per-request tables.
 
-Hourly and per-app numbers come from kept transcripts, so retention limits how far back
-they go. The page says so.
+Totals come from a separate `daily_stat` table that holds only dates and counts, so a year of activity survives a 30-day retention setting. Hourly and per-app numbers come from saved transcripts, so retention limits them, and the page says so.
 
-Statistics are computed from a separate `daily_stat` aggregate table, not from the
-transcripts. That matters. Retention deletes what you said, and it should not also
-delete the fact that you said it. The aggregate holds no content, just a date, a word
-count, a dictation count, and a duration, so a year of activity survives a 30-day
-retention setting. Upgrading backfills the table from whatever transcripts you still
-have.
-
-Words per minute is inserted words multiplied by 60, divided by total elapsed
-seconds. The elapsed time includes recording and the full processing wait until
-final text is ready. The processing timer includes transcription, cleanup, retries,
-and initial latency. Latency is already part of processing, so it is not added
-again. Totals divide summed words by summed time, rather than averaging session speeds.
-Only records with saved processing timing contribute. Older records without timing
-remain in word and dictation totals, and the speed tooltip reports timing coverage.
-These timing aggregates survive transcript retention.
-
-Time saved compares typing at 40 wpm against recording plus processing time, using
-the same records with known timing. It is an estimate and the UI says so.
-
-The heatmap is a sequential one-hue ramp, light→dark, with absence encoded as neutral
-gray rather than the palest blue. "Nothing happened" is not a small magnitude. Light
-and dark steps were each chosen and validated against their own surface rather than one
-being flipped for the other.
+Words per minute divides inserted words by the time from the start of recording to final text, so processing counts. Totals divide summed words by summed time. Records from before processing time was saved count toward words and dictations but not speed. Time saved compares that time with typing at 40 words per minute, and the page labels it an estimate.
 
 ## Local API
 
-Off by default. Settings › API turns it on. It binds to `127.0.0.1` only, so nothing off
-this Mac can reach it, and every endpoint except `/v1/health` requires a bearer token
-shown in that settings tab.
+Off by default. Turn it on in Settings › API. It listens only on `127.0.0.1`, and every endpoint except `/v1/health` needs the bearer token shown there.
 
 ```sh
 curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8787/v1/stats
@@ -384,14 +155,66 @@ curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8787/v1/stats
 
 | Method | Endpoint | Does |
 | --- | --- | --- |
-| GET | `/v1/health` | Version and whether setup is complete. No token. |
+| GET | `/v1/health` | Version and setup state. No token. |
 | GET | `/v1/stats?range=` | `today`, `week`, `month`, `year`, `allTime` |
-| GET | `/v1/activity` | Words per day, for your own charts |
+| GET | `/v1/activity` | Words per day |
 | GET | `/v1/history?q=&limit=` | Dictations, raw and cleaned |
 | GET | `/v1/notes` | Scratchpad notes |
-| POST | `/v1/notes` | `{"text":"…"}` → new note |
+| POST | `/v1/notes` | `{"text":"…"}` adds a note |
 | POST | `/v1/dictate` | `{"action":"start\|stop\|toggle\|cancel"}` |
-| POST | `/v1/insert` | `{"text":"…"}` → type it at the cursor |
+| POST | `/v1/insert` | `{"text":"…"}` types at the cursor |
+
+## Development
+
+SwiftPM builds the executable, and `scripts/build.sh` assembles and signs the app bundle with the `Flow Dev` identity from `make-cert.sh`. Without that identity it signs ad hoc and warns.
+
+```sh
+scripts/run.sh               # debug build and launch
+scripts/run.sh release       # release build and launch
+scripts/build.sh debug       # build without launching
+```
+
+### Checks
+
+```sh
+scripts/check.sh             # build without warnings, then the self-check and streaming suites
+scripts/check-cloud.sh       # provider protocols against a localhost fixture
+FLOW_ELECTRON_PATH=/path/to/Electron scripts/check-electron.sh
+FLOW_FIREFOX_APP="/Applications/Firefox Nightly.app" scripts/check-firefox.sh
+```
+
+The Electron and Firefox checks bring a test window to the front and stream into it, so leave the Mac alone while they run. The Firefox check uses a throwaway profile and refuses to run while that browser is open.
+
+### Layout
+
+```
+Sources/Flow/
+  App/            scenes, app delegate, commands
+  Diagnostics/    self-checks and desktop checks
+  Dictation/      capture, speech, cleanup, prompts, lexicon, controller
+  Insertion/      Accessibility and paste insertion, streaming, focus detection
+  Hotkey/         dictation shortcut event tap
+  Panel/          floating panel, waveform, levels
+  Store/          records, SQLite store, statistics
+  Window/         main window, settings, note editor, menu bar
+  Support/        settings, login item, environment, local API
+Prompts/          every prompt Flow sends
+AppBundle/        Info.plist and entitlements
+scripts/          build, install, checks, certificate, packaging
+```
+
+### Design notes
+
+The first version was built with only the Command Line Tools, which lack Xcode's macro plugins and test runtimes. That shaped a few choices:
+
+- Persistence uses SQLite behind a `HistoryStore` protocol instead of SwiftData, whose `@Model` macro needs Xcode.
+- Cleanup builds its schema with `DynamicGenerationSchema` instead of `@Generable`, with the same constrained decoding.
+- Audio capture is a hand-written `AVAudioEngine` tap that converts to the analyzer's format and also measures levels for the waveform, so there is one microphone session.
+- The transcriber uses the `.progressiveTranscription` preset, which emits the live partial results.
+- The shortcut is a `CGEvent` tap, because push-to-talk needs both the key-down and key-up.
+- Tests run inside the app behind `--self-check`, and `scripts/check.sh` runs them.
+
+`SpeechTranscriber.results` never finishes if the analyzer received no audio, and it ignores cancellation. Flow therefore never awaits it after finalizing. `finish()` cancels the results task and yields once so queued results land.
 
 ## Shipping
 
@@ -408,99 +231,10 @@ xcrun notarytool store-credentials flow --apple-id you@example.com \
       --team-id TEAMID --password APP-SPECIFIC-PASSWORD
 ```
 
-Without `DEVELOPER_ID` the DMG still builds and installs, but it keeps the ad-hoc
-signature, so Gatekeeper warns on other Macs. There are no signing identities on this
-machine, so the notarized path is written and wired but has not been executed here.
-
-## Custom speech model
-
-The heavier custom-vocabulary option, in Settings › Vocabulary. It trains an
-`SFCustomLanguageModelData` model from your word list and past corrections.
-
-It carries a real cost, and the settings window says so. A custom model can only be
-attached to `DictationTranscriber`, not to `SpeechTranscriber`, so turning it on trades
-the better transcriber for the fallback. Try the word list alone first. It is fed to
-the recogniser as contextual strings and to the cleanup prompt, and that is most of the
-win. Hence opt-in, with a discard button.
-
-## Where the toolchain changed the design
-
-The first implementation used Command Line Tools on macOS 26.5. The repository still
-avoids Xcode-only project files so command-line and Xcode builds share the same package.
-
-**SwiftData → SQLite.** `@Model` is a macro whose plugin ships with Xcode, not with the
-Command Line Tools, so it cannot compile here. Persistence sits behind the
-`HistoryStore` protocol with a SQLite implementation; adding a SwiftData conformance
-later means one new file and one changed line in `Library.make()`.
-
-**`@Generable` → `DynamicGenerationSchema`.** Same missing plugin. The cleanup pass
-builds its `Decision` schema through Foundation Models' dynamic schema API instead,
-which gives identical constrained decoding without the macro.
-
-**`CaptureInputSequenceProvider` → a hand-rolled tap.** The original sketch uses this
-type; it does not exist in the macOS 26.5 SDK. `AudioCapture` does the same job
-directly: an `AVAudioEngine` input tap, an `AVAudioConverter` into the analyzer's
-preferred format, and an `AsyncStream<AnalyzerInput>`. The same tap computes RMS for
-the waveform, so there is exactly one mic session.
-
-**`preset: .dictation` → `.progressiveTranscription`.** No `.dictation` preset exists.
-Progressive is the one that emits volatile results, which is what makes it feel live.
-
-**KeyboardShortcuts (SPM) → a CGEvent tap.** Push-to-talk needs both key edges; a
-registered hotkey only reports that it fired. The tap also drops a network dependency.
-
-**Application self-checks.** The original Command Line Tools environment lacked the
-XCTest and Swift Testing runtimes, so the checks live behind the app's `--self-check`
-flag. `scripts/check.sh` builds the app and runs that suite.
-
-## Fixed since the first build
-
-**The processing hang.** Holding the key worked, but releasing it left the panel stuck
-on "Cleaning up…" forever. Root cause: when the analyzer receives *zero* input buffers,
-`finalizeAndFinishThroughEndOfInput()` returns normally but `SpeechTranscriber.results`
-never terminates, and it does not honour cancellation, so awaiting it wedged the app.
-Racing it against a timeout in a task group does not help either, because a task group
-cannot return until every child finishes. The fix is to never await it: finalizing
-already guarantees delivery, so `finish()` cancels the results task and yields once to
-let queued results land. Reproduced and verified with a file-fed analyzer harness.
-
-**No visible GUI.** See [Where the app is](#where-the-app-is).
-
-**Permission grants silently not applying.** See
-[Permissions that will not stick](#permissions-that-will-not-stick). This was the cause
-of "I granted it, I quit the app, no difference" and of dictation refusing to start.
-
-**The panel never went away.** After a failed dictation the error timed out back to
-idle, but nothing hid the panel, so it sat on screen reading "Hold fn to talk"
-indefinitely. The panel now follows the dictation: when the phase returns to idle, it
-hides.
-
-**Cleanup status was frozen at whatever it was on launch.** `SystemLanguageModel`
-availability is not observable and flips without warning. The model finishes preparing,
-or you switch Apple Intelligence on. Flow now polls while it is unavailable and starts
-using cleanup on its own, no relaunch. The "model still downloading" wording was also
-overconfident: `.modelNotReady` is macOS reporting that Apple Intelligence is not ready
-yet, which is not always a download, so the copy now says so and points at the right
-settings pane.
-
-**In-note dictation demanded Accessibility.** Dictating into a Flow note never types
-into another app, so it no longer requires the permission that only exists for typing.
-
-**Silent failure when the mic delivered nothing.** Flow now distinguishes "you said
-nothing" from "no sound reached the microphone" and says which.
+Without `DEVELOPER_ID`, the DMG keeps an ad-hoc signature and Gatekeeper warns on other Macs. The notarized path has not been run yet.
 
 ## Known limitations
 
-- **Local cleanup depends on Apple Intelligence.** If cloud refinement is not
-  configured and `SystemLanguageModel.availability` reports that Apple Intelligence
-  is disabled or not ready, Flow inserts raw transcripts.
-- **Clipboard restore window.** The paste path holds your clipboard for ~600 ms. Copy
-  something in exactly that window and you lose it. Acceptable.
-- **Notarization is unexecuted.** `notarytool` and `stapler` are present, but this Mac
-  has no Developer ID identity, so `scripts/package.sh`'s notarize path has never run.
-  The DMG mounts, and the app inside it validates.
-- **The dictation loop is unverified end to end.** Transcription, insertion, and the
-  panel all need Microphone and Accessibility grants, which only you can give. What has
-  been verified: the app builds, launches, stays resident, creates its database, and
-  passes all 94 self-checks; `SpeechTranscriber` reports available with `en_IN`
-  resolved and nine installed locales.
+- Without a cloud model, cleanup needs Apple Intelligence. If it is off or not ready, Flow inserts the raw transcript.
+- Anything you copy during the 600 ms after a paste is replaced when Flow restores your clipboard.
+- Streaming into browser and Electron editors depends on how each one reports its text. When Flow cannot follow an editor, it falls back to the pill and pastes the final text once.
