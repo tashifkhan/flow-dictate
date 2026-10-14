@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>Flow Firefox composer fixture</title>
+<!-- A disposable copy of Gemini's composer. Firefox reports the CSS placeholder as the empty editor's value. -->
+<style>
+  .ql-editor { width: 600px; min-height: 24px; max-height: 200px; overflow-y: auto; border: 1px solid #888; padding: 8px; white-space: pre-wrap; }
+  /* Gemini's composer draws its placeholder like this, on an empty editor. */
+  .ql-editor.ql-blank::before { content: attr(data-placeholder); color: #999; position: absolute; pointer-events: none; }
+</style>
+<div class="ql-editor ql-blank" id="editor" contenteditable="true" role="textbox" aria-multiline="true"
+     aria-label="Enter a prompt here" data-placeholder="Ask Gemini"><p><br></p></div>
+<script>
+const editor = document.getElementById('editor');
+const sync = () => editor.classList.toggle('ql-blank', editor.innerText.trim() === '');
+editor.addEventListener('input', sync);
+window.addEventListener('load', () => { editor.focus(); sync(); });
+// The check reads whatever has focus, so keep the composer focused like a user would.
+function place() {
+  editor.focus();
+  const range = document.createRange();
+  // Inside the last paragraph, where a click lands, so Firefox can report an offset.
+  const paragraph = editor.querySelector('p:last-of-type') || editor;
+  range.selectNodeContents(paragraph);
+  range.collapse(false);
+  if (paragraph.lastChild && paragraph.lastChild.nodeName === 'BR') range.setStartBefore(paragraph.lastChild), range.collapse(true);
+  const selection = getSelection();
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+setInterval(() => {
+  const selection = getSelection();
+  if (document.activeElement !== editor || !selection.rangeCount || !editor.contains(selection.anchorNode)) place();
+}, 200);
+</script></html>

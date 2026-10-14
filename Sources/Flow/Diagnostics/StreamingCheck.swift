@@ -51,6 +51,32 @@ private final class CheckStreamingField: StreamingTextField {
     }
 }
 
+/// Firefox reports an empty composer's CSS placeholder as its value, with the caret
+/// after it, until the first paste replaces it.
+@MainActor
+private final class PlaceholderField: StreamingTextField {
+    let placeholder = "Ask Gemini\n"
+    var content = ""
+    var caret = 0
+    var canExposeEmptyParagraph: Bool { true }
+    func read() -> StreamingFieldState? {
+        content.isEmpty ? .init(text: placeholder, location: 10, length: 0) : .init(text: content, location: caret, length: 0)
+    }
+    func replace(location: Int, length: Int, with text: String) -> Bool {
+        if content.isEmpty { content = text; caret = text.utf16.count; return true }
+        let value = NSMutableString(string: content)
+        value.replaceCharacters(in: NSRange(location: location, length: length), with: text)
+        content = value as String
+        caret = location + text.utf16.count
+        return true
+    }
+    func replaceEntireDraft(with text: String) -> Bool? {
+        content = text
+        caret = text.utf16.count
+        return true
+    }
+}
+
 enum StreamingCheck {
     @MainActor
     static func run() async -> Never {
@@ -105,6 +131,23 @@ enum StreamingCheck {
         let draftedRestored = await draftedStream.rollback()
         check(draftedRestored && drafted.state.text == "First paragraph.\nSecond paragraph.",
               "cancelling after existing paragraphs restores the draft")
+
+        let gemini = PlaceholderField()
+        let geminiStream = StreamingInsertion(field: gemini)!
+        let geminiFirst = await geminiStream.update("Here, why do we have")
+        let geminiNext = await geminiStream.update("Here, why do we have two buttons?\nPlease remove")
+        let geminiFinal = await geminiStream.update("Here, why do we have two buttons? Please remove the purple one.")
+        check(geminiFirst && geminiNext && geminiFinal && gemini.content == "Here, why do we have two buttons? Please remove the purple one.",
+              "a composer that reports its placeholder as text keeps receiving the whole answer")
+        let geminiRestored = await geminiStream.rollback()
+        check(geminiRestored && gemini.content.isEmpty, "cancelling restores the empty composer and its placeholder")
+        let typed = CheckStreamingField("Hello there")
+        typed.canExposeEmptyParagraph = true
+        let typedStream = StreamingInsertion(field: typed)!
+        _ = await typedStream.update(" and")
+        typed.state = .init(text: " and", location: 4, length: 0)
+        let typedNext = await typedStream.update(" and more")
+        check(!typedNext && typed.state.text == " and", "real text that vanishes is never treated as a placeholder later")
 
         let composer = CheckStreamingField("Replay the audio:")
         composer.canExposeEmptyParagraph = true

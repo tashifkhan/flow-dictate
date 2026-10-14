@@ -73,6 +73,10 @@ final class StreamingInsertion {
     private var awaitingConfirmation = false
     private var pendingEmptyParagraph = false
     private var ownsWholeRichEditor: Bool
+    /// The text the field reported before the first edit was its placeholder. Firefox
+    /// reports an empty composer's CSS placeholder as its value, such as "Ask Gemini".
+    private var originalWasPlaceholder = false
+    private var confirmedOnce = false
     /// Set once a rich editor's selection offsets turn out to disagree with its AXValue,
     /// which happens when the draft follows existing paragraphs. From then on the draft
     /// is addressed by its start and the caret, and `textStart`/`textEnd` place the
@@ -155,8 +159,9 @@ final class StreamingInsertion {
             mutable.replaceCharacters(in: NSRange(location: textStart, length: textEnd - textStart), with: next)
         }
         else { mutable.replaceCharacters(in: NSRange(location: location, length: length), with: suffix) }
+        // An owned editor holds only the draft, so its caret counts from zero.
         let after = StreamingFieldState(text: mutable as String,
-                                       location: original.location + next.utf16.count, length: 0)
+                                       location: (ownsWholeRichEditor ? 0 : original.location) + next.utf16.count, length: 0)
         let emptyParagraph = field.canExposeEmptyParagraph
             && original.text == "\n" && original.location == 0 && original.length == 0
         let replaced = ownsWholeRichEditor
@@ -173,7 +178,7 @@ final class StreamingInsertion {
         text = next
         didWrite = true
         for attempt in 0..<51 {
-            if confirmsExpectedState() { return true }
+            if confirmsExpectedState() { confirmedOnce = true; return true }
             if attempt < 50 { try? await Task.sleep(for: .milliseconds(20)) }
         }
         let actual = field.read()
@@ -229,7 +234,28 @@ final class StreamingInsertion {
                 return true
             }
         }
-        return locatesDraft(in: actual) || acceptsReformattedDraft(actual)
+        return replacedPlaceholder(actual) || locatesDraft(in: actual) || acceptsReformattedDraft(actual)
+    }
+
+    /// The first paste into an editor that looked filled left exactly the draft. The
+    /// earlier text was a placeholder, not the user's words: a paste at a collapsed
+    /// caret cannot remove real text. From here Flow owns the whole editor, as it does
+    /// one that starts empty.
+    private func replacedPlaceholder(_ actual: StreamingFieldState) -> Bool {
+        guard field.canExposeEmptyParagraph, !ownsWholeRichEditor, !confirmedOnce, original.length == 0,
+              actual.length == 0, original.text.utf16.count <= 200,
+              !original.text.dropLast(original.text.hasSuffix("\n") ? 1 : 0).contains("\n") else { return false }
+        let draft = text as NSString
+        guard actual.text == text || actual.text == text + "\n"
+                || (text.hasSuffix("\n") && actual.text == String(text.dropLast())) else { return false }
+        let paragraphs = text.filter { $0 == "\n" }.count
+        guard actual.location == draft.length || actual.location == draft.length - paragraphs else { return false }
+        ownsWholeRichEditor = true
+        originalWasPlaceholder = true
+        expected = actual
+        pendingEmptyParagraph = false
+        log.notice("stream: the field's earlier text was a placeholder (\(self.original.text.utf16.count) characters)")
+        return true
     }
 
     /// Letters only. Markdown composers turn a pasted blank line into one paragraph
@@ -333,7 +359,11 @@ final class StreamingInsertion {
         draftEnd = nil
         for attempt in 0..<51 {
             if let actual = field.read(), actual == restored
-                || (lenient && actual.length == 0 && Self.words(actual.text) == Self.words(original.text)) { return true }
+                || (lenient && actual.length == 0 && Self.words(actual.text) == Self.words(original.text))
+                // An emptied editor may not show its placeholder again right away.
+                || (originalWasPlaceholder && actual.length == 0 && actual.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) {
+                return true
+            }
             if attempt < 50 { try? await Task.sleep(for: .milliseconds(20)) }
         }
         detached = true

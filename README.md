@@ -62,6 +62,7 @@ the Dock icon visible all the time.
 scripts/check.sh
 scripts/check-cloud.sh        # localhost provider protocol fixtures
 FLOW_ELECTRON_PATH=/path/to/Electron scripts/check-electron.sh # isolated desktop editor fixture
+FLOW_FIREFOX_APP="/Applications/Firefox Nightly.app" scripts/check-firefox.sh # Gemini-style composer, throwaway profile
 ```
 
 Checks covering the SQLite store, retention, search, record derivation, statistics,
@@ -203,7 +204,9 @@ after the field confirms the edit. Flow checks the field and caret before
 each update. If you move focus or edit the text, it stops updating the field and
 shows the remaining response in the pill. The pill appears only when no field can be
 tracked or the field refuses an edit, never for a field that is slow but working.
-Once it appears it stays up for at least 0.9 s before it collapses. Rich editors that already hold paragraphs can skip the separators in their
+Once it appears it stays up for at least 0.9 s before it collapses. Firefox reports an empty composer's CSS placeholder, such as Gemini's "Ask Gemini",
+as its text. When the first paste leaves only the draft, Flow treats that text as a
+placeholder and takes over the whole editor. Rich editors that already hold paragraphs can skip the separators in their
 selection offsets; Flow finds the draft in the field's text and keeps streaming
 after the existing paragraphs. Composers that parse pasted Markdown, like T3 Code's,
 turn a blank line into one paragraph break and "- " lines into lists. Flow accepts
