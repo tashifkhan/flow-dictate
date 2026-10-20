@@ -39,6 +39,25 @@ enum PanelCheck {
             capture.waitUntilExit()
             print("\(name) keyboard owner: \(String(describing: NSWorkspace.shared.frontmostApplication?.processIdentifier))")
         }
+        func findScrollView(in view: NSView) -> NSScrollView? {
+            if let scroll = view as? NSScrollView { return scroll }
+            return view.subviews.lazy.compactMap { findScrollView(in: $0) }.first
+        }
+        func screenPoint(_ point: CGPoint) -> CGPoint {
+            CGPoint(x: point.x, y: (NSScreen.screens.first?.frame.maxY ?? 0) - point.y)
+        }
+        func scrollBack(in scroll: NSScrollView, window: NSWindow) async {
+            let rect = window.convertToScreen(scroll.convert(scroll.bounds, to: nil))
+            for phase in [NSEvent.Phase.began, .changed, .ended] {
+                let event = CGEvent(scrollWheelEvent2Source: CGEventSource(stateID: .privateState),
+                                    units: .pixel, wheelCount: 1,
+                                    wheel1: phase == .ended ? 0 : 180, wheel2: 0, wheel3: 0)
+                event?.location = screenPoint(CGPoint(x: rect.midX, y: rect.midY))
+                event?.setIntegerValueField(.scrollWheelEventScrollPhase, value: Int64(phase.rawValue))
+                event?.post(tap: .cghidEventTap)
+                try? await Task.sleep(for: .milliseconds(80))
+            }
+        }
         for size in PanelSize.allCases {
             Settings.shared.panelSize = size
             await controller.previewPanelForCheck(.recording)
@@ -53,12 +72,51 @@ enum PanelCheck {
                                                       toField: true)
             }
             report[size.rawValue + "NoPillWhileFieldStreams"] = !controller.showsStreamingPreview
+                && presenter.diagnosticPreview?.isVisible == false
             await snapshot(size.rawValue + "-field-progress")
+            await controller.previewPanelForCheck(.processing, text: "A short reply.")
+            await snapshot(size.rawValue + "-short-preview")
+            if let preview = presenter.diagnosticPreview {
+                report[size.rawValue + "ShortPreviewFitsContent"] = preview.isVisible
+                    && preview.viewportHeight < 40
+                    && StreamingPreviewState.contentWidth(for: preview.displayedText) < 292
+            }
             for step in 1...20 {
                 await controller.previewPanelForCheck(.processing, text: String(repeating: "A calm live preview with the complete response. ", count: step))
                 try? await Task.sleep(for: .milliseconds(30))
             }
+            let longText = String(repeating: "The preview keeps earlier lines so you can scroll back and read them. ", count: 30)
+            await controller.previewPanelForCheck(.processing, text: longText)
+            presenter.diagnosticPreview?.update(longText, animated: false)
             await snapshot(size.rawValue + "-fallback")
+            if let preview = presenter.diagnosticPreview {
+                report[size.rawValue + "LongPreviewHasBoundedHeight"] = preview.contentHeight > preview.viewportHeight
+                    && preview.viewportHeight <= 126 && preview.displayedText == longText
+            }
+            if let window = presenter.diagnosticWindow, let root = window.contentView,
+               let scroll = findScrollView(in: root), let preview = presenter.diagnosticPreview {
+                let bottom = scroll.contentView.bounds.minY
+                await scrollBack(in: scroll, window: window)
+                await snapshot(size.rawValue + "-scrolled-back")
+                let readingAt = scroll.contentView.bounds.minY
+                report[size.rawValue + "ScrollBackPausesFollowing"] = !preview.followsLatest && readingAt < bottom - 20
+                let continued = longText + "These new words should not interrupt reading earlier lines."
+                await controller.previewPanelForCheck(.processing, text: continued)
+                preview.update(continued, animated: false)
+                try? await Task.sleep(for: .milliseconds(300))
+                report[size.rawValue + "IncomingWordsPreserveScrollPosition"] = !preview.followsLatest
+                    && abs(scroll.contentView.bounds.minY - readingAt) < 3
+                let rect = window.convertToScreen(scroll.convert(scroll.bounds, to: nil))
+                let button = screenPoint(CGPoint(x: rect.midX, y: rect.minY - 16))
+                let source = CGEventSource(stateID: .privateState)
+                CGEvent(mouseEventSource: source, mouseType: .leftMouseDown, mouseCursorPosition: button, mouseButton: .left)?.post(tap: .cghidEventTap)
+                CGEvent(mouseEventSource: source, mouseType: .leftMouseUp, mouseCursorPosition: button, mouseButton: .left)?.post(tap: .cghidEventTap)
+                await snapshot(size.rawValue + "-following-latest")
+                report[size.rawValue + "BackToLatestResumesFollowing"] = preview.followsLatest
+                    && scroll.contentView.bounds.maxY >= scroll.documentView!.bounds.height - 20
+            } else {
+                report[size.rawValue + "ScrollViewAvailable"] = false
+            }
             print("\(size.rawValue) fallback frame: \(String(describing: presenter.diagnosticWindow?.frame))")
             report[size.rawValue + "StableFrame"] = presenter.diagnosticWindow?.frame == frame
             await controller.previewPanelForCheck(.processing, text: "", toField: true)
@@ -86,6 +144,16 @@ enum PanelCheck {
             await snapshot(size.rawValue + "-tick-drawing", after: .milliseconds(120))
             await snapshot(size.rawValue + "-tick", after: .milliseconds(500))
             report[size.rawValue + "CompletionFrameStable"] = presenter.diagnosticWindow?.frame == frame
+            await controller.previewPanelForCheck(.idle)
+            let burst = "A complete response arriving in one chunk still appears word by word before the bubble closes."
+            await controller.previewPanelForCheck(.processing, text: burst)
+            await controller.previewPanelForCheck(.inserted(burst))
+            if let preview = presenter.diagnosticPreview {
+                report[size.rawValue + "SingleChunkStillRevealsWords"] = preview.isVisible && preview.displayedText != burst
+                await snapshot(size.rawValue + "-single-chunk", after: .milliseconds(80))
+                try? await Task.sleep(for: .milliseconds(750))
+                report[size.rawValue + "SingleChunkFinishesBeforeDismissal"] = !preview.isVisible && preview.displayedText == burst
+            }
             presenter.hide()
             try? await Task.sleep(for: .milliseconds(500))
             report[size.rawValue + "SurvivesPanelDismissal"] = !presenter.isVisible

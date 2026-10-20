@@ -63,6 +63,7 @@ final class PanelPresenter {
     }
 
     func hide() {
+        controller.streamingPreview.reset()
         panel?.orderOut(nil)
     }
 
@@ -72,6 +73,9 @@ final class PanelPresenter {
 
     var isVisible: Bool { panel?.isVisible == true }
     var diagnosticWindow: NSWindow? { CommandLine.arguments.contains("--check-panel") || Settings.isDemo ? panel : nil }
+    var diagnosticPreview: StreamingPreviewState? {
+        CommandLine.arguments.contains("--check-panel") ? controller.streamingPreview : nil
+    }
 
     private func make() -> FloatingPanel {
         let panel = FloatingPanel(contentRect: NSRect(origin: .zero, size: size))
