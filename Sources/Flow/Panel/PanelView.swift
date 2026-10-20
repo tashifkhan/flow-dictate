@@ -21,7 +21,7 @@ struct PanelView: View {
     /// Errors need words, so they get a wider pill than the capsule.
     static let failureWidth: CGFloat = 236
     static let morphDuration = 0.18
-    static let presentationFrame = CGSize(width: 380, height: 244)
+    static let presentationFrame = CGSize(width: 380, height: 300)
 
     @Bindable var controller: DictationController
     var presentation: PanelPresentation
@@ -75,13 +75,13 @@ struct PanelView: View {
             }
             .frame(minHeight: Self.hudHeight)
             .overlay(alignment: .bottom) {
-                if controller.showsStreamingPreview {
-                    StreamingPreview(text: controller.streamedText)
+                if controller.streamingPreview.isVisible {
+                    StreamingPreview(state: controller.streamingPreview)
                         .padding(.bottom, Self.hudHeight + 10)
                         .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.96, anchor: .bottom)))
                 }
             }
-            .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: controller.showsStreamingPreview)
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.16), value: controller.streamingPreview.isVisible)
             limitNote
                 .frame(height: Self.noticeHeight)
         }
@@ -467,48 +467,5 @@ private struct ResultTick: View {
                 do { try await Task.sleep(for: .milliseconds(900)) } catch { return }
                 withAnimation(.smooth(duration: 0.25)) { showsClipboard = true }
             }
-    }
-}
-
-/// A bounded caption, updated at ten frames per second without scroll animations.
-private struct StreamingPreview: View {
-    var text: String
-    @State private var displayedText = ""
-    @State private var pendingText = ""
-
-    var body: some View {
-        GeometryReader { geometry in
-            Text(displayedText)
-                .font(.callout)
-                .foregroundStyle(HUDPalette.ink)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(width: geometry.size.width, alignment: .leading)
-                .frame(height: geometry.size.height, alignment: .bottomLeading)
-                .transaction { $0.animation = nil }
-                .accessibilityAddTraits(.updatesFrequently)
-        }
-        .frame(width: 292, height: 78)
-        .clipped()
-        .mask(alignment: .top) {
-            VStack(spacing: 0) {
-                LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
-                    .frame(height: 8)
-                Color.black
-            }
-        }
-        .padding(14)
-        .hudSurface(cornerRadius: 20)
-        .onChange(of: text) { _, next in
-            if !next.isEmpty { pendingText = String(next.suffix(600)) }
-        }
-        .task {
-            pendingText = String(text.suffix(600))
-            displayedText = pendingText
-            while !Task.isCancelled {
-                do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
-                // Keep the last preview during provider retries rather than flashing blank.
-                if !pendingText.isEmpty { displayedText = pendingText }
-            }
-        }
     }
 }

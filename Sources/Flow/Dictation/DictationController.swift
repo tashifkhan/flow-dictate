@@ -54,6 +54,15 @@ final class DictationController {
 
     private(set) var phase: DictationPhase = .idle {
         didSet {
+            switch phase {
+            case .inserted(let text), .copied(let text), .unconfirmed(let text), .tested(let text):
+                if streamingPreview.isVisible {
+                    streamingPreview.update(text, animated: !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
+                    streamingPreview.finish()
+                }
+            case .idle, .failed, .preparing, .recording, .listUpdated: streamingPreview.reset()
+            case .processing: break
+            }
             if phase != .processing { fallbackPreviewLatched = false }
             if phase == .recording {
                 if recordingStartedAt == nil {
@@ -82,6 +91,7 @@ final class DictationController {
     /// The live transcript, volatile tail included. Shown, never inserted.
     private(set) var transcript = ""
     private(set) var streamedText = ""
+    let streamingPreview = StreamingPreviewState()
     private(set) var isStreamingToField = false
     private(set) var fallbackPreviewLatched = false {
         didSet {
@@ -734,6 +744,9 @@ final class DictationController {
         if !isStreamingToField, !text.isEmpty, !fallbackPreviewLatched {
             fallbackPreviewLatched = true
             log.notice("streaming preview in the pill: \(self.streamingInsertion == nil ? "no tracked field" : "the field stopped accepting edits", privacy: .public)")
+        }
+        if fallbackPreviewLatched {
+            streamingPreview.update(text, animated: !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
         }
     }
 
