@@ -419,7 +419,10 @@ final class DictationController {
         let deliveryApp = FrontApp.current()
         deliveryFocus = StreamingFocus(app: deliveryApp)
         noteStreamPrefix = ""
-        if case .note = destination, let field = noteStreamingField, let state = field.read() {
+        // Choose once for this result, so changing the setting cannot strand a draft.
+        if !Settings.shared.directStreamingToTextField {
+            streamingInsertion = nil
+        } else if case .note = destination, let field = noteStreamingField, let state = field.read() {
             streamingInsertion = StreamingInsertion(field: field)
             noteStreamPrefix = state.text.isEmpty || state.text.hasSuffix(" ") || state.text.hasSuffix("\n") ? "" : " "
         } else {
@@ -726,8 +729,8 @@ final class DictationController {
             guard resultsToken == token, phase == .processing, !Task.isCancelled else { return }
             isStreamingToField = updated
         }
-        // The pill is only for words the field cannot show: no tracked field at all, or
-        // an edit the field refused. A slow but working field never gets it.
+        // Show the pill when direct streaming is off, no field is tracked, or the
+        // field refused an edit. A slow but working field never gets it.
         if !isStreamingToField, !text.isEmpty, !fallbackPreviewLatched {
             fallbackPreviewLatched = true
             log.notice("streaming preview in the pill: \(self.streamingInsertion == nil ? "no tracked field" : "the field stopped accepting edits", privacy: .public)")

@@ -78,11 +78,11 @@ Settings › General › Language has a Hinglish mode. It uses the Hindi speech 
 
 ## Streaming
 
-With a cloud model that streams, text appears in the focused field as the model writes it.
+Settings > General > Text has a "Direct streaming to text field" toggle, off by default. Text streams in the bubble, then Flow inserts the completed result into the text field once. Turn the toggle on to write into the focused field as the model streams. The setting also applies to notes in Flow and takes effect when processing starts.
 
 - Native Mac fields are edited through Accessibility. Browser and Electron fields get a real paste per chunk, so the editor's own input handling runs. Flow puts your clipboard back after each paste.
 - Before each update, Flow checks that the same field still has focus and holds the draft it wrote. If you click away or edit the draft, Flow stops writing to the field and shows the rest in the pill.
-- The pill shows live text only when there is no editable field or the field refused an edit. Once shown, it stays up for at least 0.9 seconds.
+- With direct streaming on, the pill shows live text only when there is no editable field or the field refused an edit. If the completed result goes to the clipboard, the preview stays up for at least 0.9 seconds.
 - Escape restores your original text while the draft is unchanged and still focused.
 - The final result replaces the draft once cleanup, replacements, and list numbering are applied.
 

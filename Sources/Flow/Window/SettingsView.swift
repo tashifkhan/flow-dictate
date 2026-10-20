@@ -161,6 +161,12 @@ struct SettingsView: View {
                     }
                 }
                 .help("Remove filler and false starts, apply spoken corrections, and format lists")
+                Toggle(isOn: $settings.directStreamingToTextField) {
+                    SettingLabel("Direct streaming to text field", icon: "text.append", color: .teal)
+                }
+                Text("When off, text streams in the bubble and is inserted into the text field once the result is complete.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 Toggle(isOn: $settings.preferAXInsert) {
                     SettingLabel("Insert directly when the app supports it", icon: "text.cursor", color: .teal)
                 }

@@ -131,6 +131,8 @@ final class Settings {
 
     /// Cleanup is never load-bearing for insertion; this only turns off the attempt.
     var cleanupEnabled: Bool { didSet { defaults.set(cleanupEnabled, forKey: K.cleanup) } }
+    /// Off by default. When on, show partial results in the field.
+    var directStreamingToTextField: Bool { didSet { defaults.set(directStreamingToTextField, forKey: K.directStreaming) } }
     /// Try the Accessibility direct-set path before falling back to paste.
     var preferAXInsert: Bool { didSet { defaults.set(preferAXInsert, forKey: K.ax) } }
     /// Card preview lines in the grid, 0 to 5.
@@ -237,6 +239,7 @@ final class Settings {
         static let openTo = "openTo"
         static let transcriptionLanguage = "transcriptionLanguage"
         static let cleanup = "cleanupEnabled"
+        static let directStreaming = "directStreamingToTextField"
         static let ax = "preferAXInsert"
         static let preview = "previewLines"
         static let sounds = "playSounds"
@@ -274,7 +277,7 @@ final class Settings {
 
     private init() {
         defaults.register(defaults: [
-            K.cleanup: true, K.ax: true, K.preview: 3, K.sounds: true,
+            K.cleanup: true, K.directStreaming: false, K.ax: true, K.preview: 3, K.sounds: true,
             K.dock: false, K.notify: false, K.customLM: false,
             K.api: false, K.apiPort: 8787,
         ])
@@ -310,6 +313,7 @@ final class Settings {
             rawValue: defaults.string(forKey: K.transcriptionLanguage) ?? ""
         ) ?? .system
         cleanupEnabled = defaults.bool(forKey: K.cleanup)
+        directStreamingToTextField = defaults.bool(forKey: K.directStreaming)
         preferAXInsert = defaults.bool(forKey: K.ax)
         previewLines = defaults.integer(forKey: K.preview)
         playSounds = defaults.bool(forKey: K.sounds)
