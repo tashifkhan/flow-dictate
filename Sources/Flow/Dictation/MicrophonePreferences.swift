@@ -260,6 +260,7 @@ enum MicrophoneResolutionReason: Equatable, Sendable {
     case priority
     case fixed
     case systemDefault
+    case bluetoothPlayback
     /// The chosen device was absent, or macOS had no default input.
     case fallback(requested: SavedMicrophone?)
     case unavailable
@@ -273,14 +274,17 @@ struct MicrophoneResolution: Equatable, Sendable {
 /// Picks the input for the next recording. Never edits preferences or the macOS default.
 enum MicrophoneSelectionPolicy {
     static func resolve(preferences: MicrophonePreferences, available: [SavedMicrophone],
-                        systemDefaultUID: String?) -> MicrophoneResolution {
+                        systemDefaultUID: String?, hasBluetoothOutput: Bool = false) -> MicrophoneResolution {
         let preferences = preferences.normalized()
         let available = MicrophonePreferences.uniqueDevices(available)
         let systemDefault = available.first(where: { $0.uid == systemDefaultUID })
         // Core Audio's enumeration order is not a preference, so sort for a stable fallback.
-        let fallback = systemDefault ?? available.min(by: { $0.uid < $1.uid })
+        let playbackInput = hasBluetoothOutput && systemDefault?.transport == .bluetooth
+            ? available.first(where: { $0.transport == .builtIn }) : nil
+        let fallback = playbackInput ?? systemDefault ?? available.min(by: { $0.uid < $1.uid })
         guard let fallback else { return MicrophoneResolution(device: nil, reason: .unavailable) }
-        let defaultReason: MicrophoneResolutionReason = systemDefault == nil ? .fallback(requested: nil) : .systemDefault
+        let defaultReason: MicrophoneResolutionReason = playbackInput != nil ? .bluetoothPlayback
+            : systemDefault == nil ? .fallback(requested: nil) : .systemDefault
 
         switch preferences.selection {
         case .automatic:

@@ -90,7 +90,8 @@ final class Settings {
     static let shared = Settings()
     static let isDiagnosticRun = ["--self-check", "--check-streaming", "--check-cloud-http", "--probe-focus",
                                   "--check-insertion", "--check-cloud-live", "--check-electron-insertion",
-                                  "--check-target-insertion", "--check-panel", "--print-prompts", "--demo-screenshots"].contains(where: CommandLine.arguments.contains)
+                                  "--check-target-insertion", "--check-panel", "--check-audio-capture",
+                                  "--print-prompts", "--demo-screenshots"].contains(where: CommandLine.arguments.contains)
     /// README screenshots with made-up data. Only a copy renamed to `sh.taf.flow.demo`
     /// may run it, so it has its own defaults and never sees the real history or keys.
     static let isDemo = CommandLine.arguments.contains("--demo-screenshots")

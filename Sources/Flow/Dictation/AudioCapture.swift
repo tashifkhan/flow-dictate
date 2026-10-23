@@ -6,10 +6,10 @@ import Speech
 /// Mic capture, format conversion, and amplitude, in one place.
 ///
 /// The transcriber consumes the audio it needs; the panel wants amplitude. Both come
-/// off the same input tap, so there is exactly one mic session and the system mic
+/// off the same capture callback, so there is exactly one mic session and the system mic
 /// indicator tells the truth about when we are listening.
 final class AudioCapture: @unchecked Sendable {
-    private let engine = AVAudioEngine()
+    private var microphone: MicrophoneInput?
     private let log = Logger(subsystem: "sh.taf.flow", category: "audio")
 
     /// Guards everything the audio thread and the pipeline both touch.
@@ -25,16 +25,18 @@ final class AudioCapture: @unchecked Sendable {
     private var samplePosition = 0.0
     private var recordingTruncated = false
 
-    /// Serialises engine start, restart, and stop. Separate from `lock` because
-    /// removing a tap waits for an in-flight callback, and that callback takes `lock`.
-    private let engineLock = NSLock()
+    /// Serialises capture start, restart, and stop. Separate from `lock` because
+    /// stopping capture waits for an in-flight callback, and that callback takes `lock`.
+    private let captureLock = NSLock()
+    private let recoveryQueue = DispatchQueue(label: "sh.taf.flow.audio-recovery")
     private var capturing = false
+    private var captureID = UUID()
+    private var recoveryPending = false
     private var preferredInputUID = ""
-    private var configObserver: NSObjectProtocol?
 
-    /// Roughly 60 s at 48 kHz. A dictation that outruns the model loading is already
+    /// Roughly 60 s at 16 kHz. A dictation that outruns the model loading is already
     /// pathological; past this the oldest audio is dropped rather than the memory.
-    private static let maxBacklogFrames: AVAudioFrameCount = 48_000 * 60
+    private static let maxBacklogFrames: AVAudioFrameCount = 16_000 * 60
 
     /// Called on the audio thread with a 0...1 amplitude. Keep the work here trivial.
     private let onLevel: @Sendable (Float) -> Void
@@ -52,31 +54,14 @@ final class AudioCapture: @unchecked Sendable {
         case micDenied
         case noConverter
         case notCapturing
+        case inputUnavailable
         var errorDescription: String? {
             switch self {
             case .micDenied: "Flow needs microphone access. Grant it in System Settings › Privacy & Security › Microphone."
             case .noConverter: "This microphone's audio format can't be converted for transcription."
             case .notCapturing: "The microphone was not running when transcription started."
+            case .inputUnavailable: "The microphone is unavailable or still connecting. Try dictating again in a moment."
             }
-        }
-    }
-
-    /// Points the engine at the device chosen in Settings, if one is chosen and still
-    /// attached. Falls through to the system default otherwise, which is what an empty
-    /// setting, an unplugged device, or a failure all mean.
-    private func applyPreferredInputDevice(to input: AVAudioInputNode, uid: String) {
-        guard !uid.isEmpty else { return }
-        guard let device = AudioDevices.device(uid: uid) else {
-            log.notice("chosen input device is not attached; using the system default")
-            return
-        }
-        // Switching to the device the unit already uses still posts a configuration
-        // change, and that change stops the engine a few milliseconds after it starts.
-        guard input.auAudioUnit.deviceID != device.id else { return }
-        do {
-            try input.auAudioUnit.setDeviceID(device.id)
-        } catch {
-            log.error("could not select input device: \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -89,80 +74,79 @@ final class AudioCapture: @unchecked Sendable {
         }
     }
 
-    /// Starts the engine and returns the stream of buffers the analyzer will consume.
-    /// `analyzerFormat` comes from `SpeechAnalyzer.bestAvailableAudioFormat`.
-    /// Opens the microphone. Nothing here waits on the speech model.
-    ///
-    /// This is the whole point of splitting capture from analysis: the model can take
-    /// hundreds of milliseconds to resolve — and minutes the first time, if assets have
-    /// to download — and every one of those was previously spent with the mic shut. Audio
-    /// captured before `attach` accumulates in `backlog` and is replayed in order, so the
-    /// first word survives however long the model takes.
-    ///
-    /// `preferredInputUID` is read on the main actor by the caller and passed in. This
-    /// runs off the main actor, so it must not touch `Settings` itself.
+    /// Opens only the selected input. Capture starts before the speech model loads.
     func startCapturing(preferredInputUID: String) throws {
-        // A device switch, a sample-rate change, or an unplugged mic stops the engine
-        // and posts this. Without a restart the tap goes quiet for the rest of the take.
-        // Registered first so a change during start is not missed; the handler waits on
-        // `engineLock` until `capturing` is set.
-        configObserver = NotificationCenter.default.addObserver(
-            forName: .AVAudioEngineConfigurationChange,
-            object: engine,
-            queue: nil
-        ) { [weak self] _ in
-            self?.restartAfterConfigurationChange()
-        }
-
-        do {
-            try engineLock.withLock {
-                self.preferredInputUID = preferredInputUID
-                try startEngine()
-                capturing = true
-            }
-        } catch {
-            if let configObserver { NotificationCenter.default.removeObserver(configObserver) }
-            configObserver = nil
-            throw error
+        try captureLock.withLock {
+            self.preferredInputUID = preferredInputUID
+            captureID = UUID()
+            try startMicrophone()
+            capturing = true
         }
     }
 
-    /// Caller holds `engineLock`.
-    private func startEngine() throws {
-        let input = engine.inputNode
-        // Must happen before the format is read: pointing the unit at a different device
-        // changes the format it reports, and the converter is built from that.
-        applyPreferredInputDevice(to: input, uid: preferredInputUID)
-        let format = input.outputFormat(forBus: 0)
-        lock.withLock { inputFormat = format }
-
-        // 1024 frames at 48kHz is ~21ms: fast enough that the first waveform bar lands
-        // well inside the 100ms budget.
-        input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
+    /// Caller holds captureLock. AVCaptureSession owns hardware format negotiation,
+    /// and supplies a stable mono Float32 stream without opening a playback device.
+    private func startMicrophone() throws {
+        let devices = AudioDevices.snapshot()
+        let fallback = MicrophoneSelectionPolicy.resolve(
+            preferences: MicrophonePreferences(selection: .systemDefault),
+            available: devices.inputs.map(\.saved), systemDefaultUID: devices.systemDefaultUID,
+            hasBluetoothOutput: devices.hasBluetoothOutput
+        )
+        guard let device = devices.inputs.first(where: { $0.uid == preferredInputUID })
+            ?? devices.inputs.first(where: { $0.uid == fallback.device?.uid }) else {
+            throw CaptureError.inputUnavailable
+        }
+        let input = MicrophoneInput { [weak self] buffer in
             guard let self else { return }
             self.meter(buffer)
             if self.recordsAudio { self.record(buffer) }
             self.consume(buffer)
         }
-
-        engine.prepare()
+        lock.withLock { inputFormat = MicrophoneInput.format }
         do {
-            try engine.start()
+            try input.start(uid: device.uid) { [weak self] in
+                self?.recoveryQueue.async { [weak self] in self?.scheduleRecovery() }
+            }
+            microphone = input
         } catch {
-            input.removeTap(onBus: 0)
+            input.stop()
             throw error
         }
     }
 
-    private func restartAfterConfigurationChange() {
-        engineLock.withLock {
-            guard capturing, !engine.isRunning else { return }
+    private func scheduleRecovery() {
+        captureLock.withLock {
+            guard capturing, !recoveryPending else { return }
+            recoveryPending = true
+            enqueueRecovery(captureID: captureID, attempt: 0)
+        }
+    }
+
+    /// Coalesce profile-change notifications and retry while the Bluetooth route settles.
+    /// The session ID prevents a queued restart from reopening a stopped microphone.
+    private func enqueueRecovery(captureID: UUID, attempt: Int) {
+        recoveryQueue.asyncAfter(deadline: .now() + .milliseconds(150 * (attempt + 1))) { [weak self] in
+            self?.restartAfterConfigurationChange(captureID: captureID, attempt: attempt)
+        }
+    }
+
+    private func restartAfterConfigurationChange(captureID: UUID, attempt: Int) {
+        captureLock.withLock {
+            guard capturing, self.captureID == captureID else { return }
             log.notice("audio configuration changed; restarting the microphone")
-            engine.inputNode.removeTap(onBus: 0)
+            microphone?.stop()
+            microphone = nil
             do {
-                try startEngine()
+                try startMicrophone()
+                recoveryPending = false
             } catch {
                 log.error("could not restart the microphone: \(error.localizedDescription, privacy: .public)")
+                if attempt < 5 {
+                    enqueueRecovery(captureID: captureID, attempt: attempt + 1)
+                } else {
+                    recoveryPending = false
+                }
             }
         }
     }
@@ -181,7 +165,7 @@ final class AudioCapture: @unchecked Sendable {
             bufferingPolicy: .bufferingNewest(256)
         )
 
-        // Draining inside the lock keeps the ordering honest: a tap callback that fires
+        // Draining inside the lock keeps the ordering honest: a capture callback that fires
         // mid-drain blocks here and lands after the backlog, not in the middle of it.
         lock.withLock {
             self.converter = converter
@@ -214,10 +198,10 @@ final class AudioCapture: @unchecked Sendable {
                 }
                 return
             }
-            // The engine reuses its buffers, so this has to be a copy, not a reference.
-            guard backlogFrames < Self.maxBacklogFrames, let copy = Self.copy(buffer) else { return }
-            backlog.append(copy)
-            backlogFrames += copy.frameLength
+            // MicrophoneInput already copied this buffer out of AVFoundation's pool.
+            guard backlogFrames < Self.maxBacklogFrames else { return }
+            backlog.append(buffer)
+            backlogFrames += buffer.frameLength
         }
     }
 
@@ -234,33 +218,17 @@ final class AudioCapture: @unchecked Sendable {
         return rebuilt
     }
 
-    private static func copy(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
-        guard let out = AVAudioPCMBuffer(pcmFormat: buffer.format, frameCapacity: buffer.frameLength),
-              let src = buffer.floatChannelData, let dst = out.floatChannelData
-        else { return nil }
-        out.frameLength = buffer.frameLength
-        let channels = Int(buffer.format.channelCount)
-        let frames = Int(buffer.frameLength)
-        for channel in 0..<channels {
-            dst[channel].update(from: src[channel], count: frames)
-        }
-        return out
-    }
-
-    /// Stops the tap the moment the key goes up. An app that keeps the mic dot lit
+    /// Stops capture the moment the key goes up. An app that keeps the mic dot lit
     /// while idle is malware behaviour, even when it is not.
     func stop() {
-        if let configObserver {
-            NotificationCenter.default.removeObserver(configObserver)
-            self.configObserver = nil
-        }
-        engineLock.withLock {
+        captureLock.withLock {
             capturing = false
-            // The tap outlives a configuration-change stop, so remove it either way.
-            engine.inputNode.removeTap(onBus: 0)
-            if engine.isRunning { engine.stop() }
+            captureID = UUID()
+            recoveryPending = false
+            microphone?.stop()
+            microphone = nil
         }
-        // The tap is gone, so nothing else is touching the meter now.
+        // The capture queue is drained, so nothing else is touching the meter now.
         levelMeter = AudioLevelMeter()
         meterSumSquares = 0
         meterFrames = 0
@@ -374,13 +342,13 @@ final class AudioCapture: @unchecked Sendable {
 
     // MARK: - Amplitude
 
-    // Touched only by the tap callback, which never overlaps itself, and by stop() after
-    // the tap is removed.
+    // Touched only by the capture callback, which never overlaps itself, and by stop() after
+    // the capture queue is drained.
     private var levelMeter = AudioLevelMeter()
     private var meterSumSquares: Double = 0
     private var meterFrames = 0
 
-    /// RMS over 50 ms windows of channel 0, smoothed by Sotto's meter. The engine picks
+    /// RMS over 50 ms windows of channel 0, smoothed by Sotto's meter. The capture session picks
     /// its own buffer size, so windows span buffers and one buffer can emit several levels.
     private func meter(_ buffer: AVAudioPCMBuffer) {
         guard let samples = buffer.floatChannelData?[0] else { return }
