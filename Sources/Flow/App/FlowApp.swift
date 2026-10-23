@@ -46,6 +46,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // Flow owns a global hotkey even with every window hidden.
             ProcessInfo.processInfo.disableAutomaticTermination("Flow waits for the dictation hotkey")
             if CommandLine.arguments.contains("--self-check") { SelfCheck.run() }
+            if let index = CommandLine.arguments.firstIndex(of: "--check-audio-capture"),
+               CommandLine.arguments.indices.contains(index + 1) {
+                let output = CommandLine.arguments[index + 1]
+                Task { await AudioCaptureCheck.run(output: output) }
+                return
+            }
             if let index = CommandLine.arguments.firstIndex(of: "--demo-screenshots"),
                CommandLine.arguments.indices.contains(index + 1) {
                 let directory = CommandLine.arguments[index + 1]

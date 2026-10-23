@@ -18,7 +18,8 @@ struct MicrophoneSettingsView: View {
         let resolution = MicrophoneSelectionPolicy.resolve(
             preferences: preferences,
             available: devices.map(\.saved),
-            systemDefaultUID: env.devices.systemDefaultUID
+            systemDefaultUID: env.devices.systemDefaultUID,
+            hasBluetoothOutput: env.devices.hasBluetoothOutput
         )
         let preferredUIDs = Set(profile.priority.map(\.uid))
         let otherDevices = devices.filter { !preferredUIDs.contains($0.uid) }
@@ -48,6 +49,15 @@ struct MicrophoneSettingsView: View {
                 Text(selectionDetail(profile: profile, resolution: resolution))
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                if let resolvedDevice, resolvedDevice.transport == .bluetooth {
+                    Label(
+                        "Using a Bluetooth headset microphone switches the headset to call audio and reduces playback quality. Choose the Mac microphone to keep full-quality playback.",
+                        systemImage: "headphones"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
 
                 if let resolvedDevice, resolvedDevice.isTelephonyQuality {
                     Label(
@@ -296,6 +306,8 @@ struct MicrophoneSettingsView: View {
         case .unavailable: return "Connect an audio input to start dictating."
         case .priority: return "Flow uses the first connected microphone in \(profile.name)."
         case .fixed: return "Flow uses this microphone whenever it is connected."
+        case .bluetoothPlayback:
+            return "Uses the Mac microphone to keep Bluetooth playback at full quality. Select the headset directly to use its microphone."
         case .systemDefault:
             return settings.microphones.selection == .systemDefault
                 ? "Follows the macOS input. Your system settings stay as they are."

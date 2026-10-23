@@ -55,6 +55,7 @@ enum AudioDevices {
         let deviceIDs: [AudioDeviceID]
         let inputs: [Device]
         let systemDefaultUID: String?
+        let hasBluetoothOutput: Bool
     }
 
     // MARK: - Enumeration
@@ -79,10 +80,12 @@ enum AudioDevices {
             return order == .orderedSame ? left.uid < right.uid : order == .orderedAscending
         }
         let defaultID = uint32Property(AudioObjectID(kAudioObjectSystemObject), kAudioHardwarePropertyDefaultInputDevice)
+        let outputID = uint32Property(AudioObjectID(kAudioObjectSystemObject), kAudioHardwarePropertyDefaultOutputDevice)
         return Snapshot(
             deviceIDs: ids,
             inputs: inputs,
-            systemDefaultUID: inputs.first { $0.id == defaultID }?.uid
+            systemDefaultUID: inputs.first { $0.id == defaultID }?.uid,
+            hasBluetoothOutput: outputID.map { transport(uint32Property($0, kAudioDevicePropertyTransportType)) == .bluetooth } ?? false
         )
     }
 
@@ -204,6 +207,7 @@ enum AudioDevices {
 final class AudioDeviceMonitor {
     private(set) var inputs: [AudioDevices.Device] = []
     private(set) var systemDefaultUID: String?
+    private(set) var hasBluetoothOutput = false
     @ObservationIgnored var onChange: (([AudioDevices.Device]) -> Void)?
 
     @ObservationIgnored private var systemObservers: [AudioPropertyObservation] = []
@@ -214,7 +218,8 @@ final class AudioDeviceMonitor {
         guard !monitoring else { return }
         monitoring = true
         let system = AudioObjectID(kAudioObjectSystemObject)
-        for selector in [kAudioHardwarePropertyDevices, kAudioHardwarePropertyDefaultInputDevice] {
+        for selector in [kAudioHardwarePropertyDevices, kAudioHardwarePropertyDefaultInputDevice,
+                         kAudioHardwarePropertyDefaultOutputDevice] {
             if let observer = observe(system, selector, kAudioObjectPropertyScopeGlobal) {
                 systemObservers.append(observer)
             }
@@ -226,9 +231,11 @@ final class AudioDeviceMonitor {
         let snapshot = AudioDevices.snapshot()
         if monitoring { updateDeviceObservers(snapshot.deviceIDs) }
         let changed = inputs != snapshot.inputs || systemDefaultUID != snapshot.systemDefaultUID
+            || hasBluetoothOutput != snapshot.hasBluetoothOutput
         guard changed else { return }
         inputs = snapshot.inputs
         systemDefaultUID = snapshot.systemDefaultUID
+        hasBluetoothOutput = snapshot.hasBluetoothOutput
         onChange?(inputs)
     }
 

@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import ApplicationServices
 import Carbon.HIToolbox
 import Foundation
@@ -1294,6 +1295,26 @@ enum SelfCheck {
                                                  systemDefaultUID: "built-in").device == builtIn,
                "and skips one that is disconnected")
         let fixed = MicrophonePreferences(selection: .fixed(headset))
+        for selection in [MicrophoneSelection.automatic, .systemDefault] {
+            let protected = MicrophoneSelectionPolicy.resolve(
+                preferences: MicrophonePreferences(selection: selection), available: [headset, builtIn],
+                systemDefaultUID: headset.uid, hasBluetoothOutput: true
+            )
+            expect(protected.device == builtIn && protected.reason == .bluetoothPlayback,
+                   "\(selection) uses the Mac microphone to protect Bluetooth playback")
+        }
+        expect(MicrophoneSelectionPolicy.resolve(preferences: fixed, available: [headset, builtIn],
+                                                 systemDefaultUID: headset.uid, hasBluetoothOutput: true).device == headset,
+               "an explicitly selected headset microphone remains available")
+        expect(MicrophoneSelectionPolicy.resolve(preferences: desk, available: [headset, builtIn],
+                                                 systemDefaultUID: headset.uid, hasBluetoothOutput: true).device == headset,
+               "an explicit microphone priority also overrides playback protection")
+        expect(MicrophoneSelectionPolicy.resolve(preferences: MicrophonePreferences(), available: [headset],
+                                                 systemDefaultUID: headset.uid, hasBluetoothOutput: true).device == headset,
+               "a headset still works when no Mac microphone is available")
+        expect(MicrophoneSelectionPolicy.resolve(preferences: MicrophonePreferences(), available: [headset, builtIn],
+                                                 systemDefaultUID: headset.uid).device == headset,
+               "the default headset input is preserved when output is not Bluetooth")
         expect(MicrophoneSelectionPolicy.resolve(preferences: fixed, available: [builtIn],
                                                  systemDefaultUID: "built-in").reason == .fallback(requested: headset),
                "a disconnected fixed device falls back and says so")
@@ -1301,6 +1322,30 @@ enum SelfCheck {
                                                  systemDefaultUID: nil).device == nil,
                "no inputs resolves to no device")
         expect((try? desk.addProfile(named: " default ")) == nil, "list names must be unique")
+        for rate in [8_000.0, 16_000.0, 24_000.0, 44_100.0, 48_000.0] {
+            for interleaved in [false, true] {
+                let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: rate,
+                                           channels: 2, interleaved: interleaved)!
+                let pcm = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 256)!
+                pcm.frameLength = 256
+                for channel in 0..<2 {
+                    for frame in 0..<256 {
+                        pcm.floatChannelData![interleaved ? 0 : channel][frame * pcm.stride + (interleaved ? channel : 0)] = Float(channel + 1) / 8
+                    }
+                }
+                let sample = AudioCaptureCheck.sampleBuffer(from: pcm)
+                let copy = sample.flatMap(MicrophoneInput.copyPCM)
+                let valuesMatch = copy.map { copied in
+                    (0..<2).allSatisfy { channel in
+                        (0..<256).allSatisfy { frame in
+                            copied.floatChannelData![interleaved ? 0 : channel][frame * copied.stride + (interleaved ? channel : 0)] == Float(channel + 1) / 8
+                        }
+                    }
+                } ?? false
+                expect(copy?.frameLength == 256 && copy?.format == format && valuesMatch,
+                       "capture copies every PCM channel at \(rate) Hz, interleaved=\(interleaved)")
+            }
+        }
         var meter = AudioLevelMeter()
         expect(meter.update(rms: 0, frameCount: 800, sampleRate: 16_000) == 0, "silence meters as zero")
         for _ in 0..<20 { meter.update(rms: 0.125, frameCount: 800, sampleRate: 16_000) }

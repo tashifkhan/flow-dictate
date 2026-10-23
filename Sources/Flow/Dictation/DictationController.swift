@@ -327,7 +327,8 @@ final class DictationController {
         let resolution = MicrophoneSelectionPolicy.resolve(
             preferences: Settings.shared.microphones,
             available: devices.inputs.map(\.saved),
-            systemDefaultUID: devices.systemDefaultUID
+            systemDefaultUID: devices.systemDefaultUID,
+            hasBluetoothOutput: devices.hasBluetoothOutput
         )
         guard let input = resolution.device else {
             fail("No microphone is available. Connect an input and try again.")

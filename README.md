@@ -201,12 +201,15 @@ scripts/build.sh debug       # build without launching
 ```sh
 scripts/check.sh             # build without warnings, then the self-check and streaming suites
 scripts/check-cloud.sh       # provider protocols against a localhost fixture
+build/Flow.app/Contents/MacOS/Flow --check-audio-capture /tmp/flow-audio.json
 FLOW_ELECTRON_PATH=/path/to/Electron scripts/check-electron.sh
 FLOW_FIREFOX_APP="/Applications/Firefox Nightly.app" scripts/check-firefox.sh
 scripts/screenshots.sh       # README screenshots, from a demo copy of the app
 ```
 
 The Electron and Firefox checks bring a test window to the front and stream into it, so leave the Mac alone while they run. `screenshots.sh` runs a copy of the app renamed to `sh.taf.flow.demo`, so it has its own settings, keeps its made-up history in memory, and never reads your dictations or Keychain keys. The Firefox check uses a throwaway profile and refuses to run while that browser is open.
+
+The audio capture check opens each connected built-in, Bluetooth, and USB microphone twice. It checks analyzer buffers, cloud audio conversion, and meter callbacks. The JSON report contains counts and levels. It saves no audio and leaves the macOS input selection unchanged.
 
 ### Layout
 
@@ -232,7 +235,7 @@ The first version was built with only the Command Line Tools, which lack Xcode's
 
 - Persistence uses SQLite behind a `HistoryStore` protocol instead of SwiftData, whose `@Model` macro needs Xcode.
 - Cleanup builds its schema with `DynamicGenerationSchema` instead of `@Generable`, with the same constrained decoding.
-- Audio capture is a hand-written `AVAudioEngine` tap that converts to the analyzer's format and also measures levels for the waveform, so there is one microphone session.
+- Audio capture uses an `AVCaptureSession` for the selected microphone, converts to the analyzer's format, and measures levels for the waveform. It never creates a playback graph. Automatic and system-default selection use the Mac microphone when a default Bluetooth input would reduce headset playback quality. An explicit device or priority list takes precedence.
 - The transcriber uses the `.progressiveTranscription` preset, which emits the live partial results.
 - The shortcut is a `CGEvent` tap, because push-to-talk needs both the key-down and key-up.
 - Tests run inside the app behind `--self-check`, and `scripts/check.sh` runs them.
