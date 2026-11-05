@@ -216,8 +216,9 @@ The audio capture check opens each connected built-in, Bluetooth, and USB microp
 ```
 Sources/Flow/
   App/            scenes, app delegate, commands
+  Cloud/          provider types, keys, HTTP and streaming client, usage, pricing
   Diagnostics/    self-checks and desktop checks
-  Dictation/      capture, speech, cleanup, prompts, lexicon, controller
+  Dictation/      capture, speech, cleanup, prompts, lexicon, cloud ladder, controller
   Insertion/      Accessibility and paste insertion, streaming, focus detection
   Hotkey/         dictation shortcut event tap
   Panel/          floating panel, waveform, levels
@@ -239,6 +240,7 @@ The first version was built with only the Command Line Tools, which lack Xcode's
 - The transcriber uses the `.progressiveTranscription` preset, which emits the live partial results.
 - The shortcut is a `CGEvent` tap, because push-to-talk needs both the key-down and key-up.
 - Tests run inside the app behind `--self-check`, and `scripts/check.sh` runs them.
+- `Cloud/` uses no dictation types. `scripts/check.sh` typechecks the folder by itself, so a reference to `Dictation/` or `Window/` fails the check. Another app can copy the folder and change only the Keychain service, log subsystem and pricing cache path.
 
 `SpeechTranscriber.results` never finishes if the analyzer received no audio, and it ignores cancellation. Flow therefore never awaits it after finalizing. `finish()` cancels the results task and yields once so queued results land.
 

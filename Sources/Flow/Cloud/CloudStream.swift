@@ -18,18 +18,18 @@ struct CloudStream {
     mutating func byte(_ byte: UInt8, elapsed: TimeInterval) throws {
         if byte == 10 {
             if lineBytes.last == 13 { lineBytes.removeLast() }
-            guard let value = String(data: lineBytes, encoding: .utf8) else { throw CloudService.CloudError.invalidResponse }
+            guard let value = String(data: lineBytes, encoding: .utf8) else { throw CloudError.invalidResponse }
             lineBytes.removeAll(keepingCapacity: true)
             try line(value, elapsed: elapsed)
         } else {
             lineBytes.append(byte)
-            if lineBytes.count > 4_000_000 { throw CloudService.CloudError.invalidResponse }
+            if lineBytes.count > 4_000_000 { throw CloudError.invalidResponse }
         }
     }
 
     mutating func finish(elapsed: TimeInterval) throws {
         if !lineBytes.isEmpty {
-            guard let value = String(data: lineBytes, encoding: .utf8) else { throw CloudService.CloudError.invalidResponse }
+            guard let value = String(data: lineBytes, encoding: .utf8) else { throw CloudError.invalidResponse }
             try line(value, elapsed: elapsed)
             lineBytes.removeAll()
         }
@@ -51,7 +51,7 @@ struct CloudStream {
         if value == "[DONE]" { ended = true; return }
         guard let data = value.data(using: .utf8),
               let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw CloudService.CloudError.invalidResponse
+            throw CloudError.invalidResponse
         }
         consume(json, elapsed: elapsed)
     }
@@ -107,7 +107,7 @@ struct CloudStream {
 
     func responseJSON() throws -> [String: Any] {
         guard ended, !providerError, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw CloudService.CloudError.invalidResponse
+            throw CloudError.invalidResponse
         }
         switch api {
         case .openAI: return ["choices": [["message": ["content": text]]]]

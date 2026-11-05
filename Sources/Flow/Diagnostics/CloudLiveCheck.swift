@@ -16,7 +16,7 @@ enum CloudLiveCheck {
             let settings = Settings.shared.cloud
             report["providers"] = settings.providers.map { ["name": $0.name, "problem": $0.problem ?? "Ready"] }
             guard !settings.readyRungs.isEmpty else {
-                throw CloudService.CloudError.skipped
+                throw CloudService.LadderError.skipped
             }
             let candidates = Array(settings.readyRungs.prefix(1))
             for rung in candidates {
