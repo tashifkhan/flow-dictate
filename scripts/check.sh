@@ -18,6 +18,9 @@ if grep -E '(^|: )warning:' "$BUILD_LOG" >/dev/null; then
     exit 1
 fi
 
+# Cloud/ must build without the rest of the app, so another app can copy it as is.
+xcrun swiftc -typecheck -swift-version 6 -target arm64-apple-macos26.0 "$PROJECT_ROOT"/Sources/Flow/Cloud/*.swift
+
 "$SCRIPT_DIR/build.sh" debug
 "$APP_BUNDLE/Contents/MacOS/Flow" --self-check
 "$APP_BUNDLE/Contents/MacOS/Flow" --check-streaming

@@ -34,15 +34,15 @@ enum CloudTelemetryCheck {
                "unknown processing time does not fall back to audio-only speed")
         var invalid = timedA; invalid.processingDuration = -1
         expect(invalid.wordsPerSecond == nil, "invalid timing cannot produce throughput")
-        expect(CloudService.outputWordCount(["candidates": [["content": ["parts": [
+        expect(CloudClient.outputWordCount(["candidates": [["content": ["parts": [
             ["text": "hidden reasoning", "thought": true], ["text": "two words"]]]]]], api: .google) == 2,
                "word counts exclude Google's thinking text")
-        expect(CloudService.outputWordCount(["text": "three transcript words"], api: .openAI) == 3,
+        expect(CloudClient.outputWordCount(["text": "three transcript words"], api: .openAI) == 3,
                "non-streamed audio transcription also reports output words")
-        expect(CloudService.outputWordCount(["content": [["type": "thinking", "text": "ignore me"],
+        expect(CloudClient.outputWordCount(["content": [["type": "thinking", "text": "ignore me"],
             ["type": "text", "text": "two words"]]], api: .anthropic) == 2,
                "Anthropic word counts include only visible text")
-        expect(CloudService.outputWordCount(["usage": ["completion_tokens": 123]], api: .openAI) == nil,
+        expect(CloudClient.outputWordCount(["usage": ["completion_tokens": 123]], api: .openAI) == nil,
                "token counts are never substituted for word counts")
         do {
             let migrationURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("flow-timing-migration-\(UUID()).sqlite")

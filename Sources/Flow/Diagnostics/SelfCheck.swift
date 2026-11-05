@@ -1129,7 +1129,7 @@ enum SelfCheck {
             expect(config.readyRungs.count == 2, "configs whose provider lacks a key drop out of the ladder")
             config.providers[1].apiKey = "another-secret"
             var payload: [String: Any] = [:]
-            CloudService.applyReasoning(CloudModel(providerID: claude.id, name: "", modelID: "x", reasoning: .off),
+            CloudClient.applyReasoning(CloudModel(providerID: claude.id, name: "", modelID: "x", reasoning: .off),
                                         api: .anthropic, to: &payload)
             expect(payload["thinking"] == nil && (payload["output_config"] as? [String: String])?["effort"] == "low",
                    "minimal reasoning on Claude lowers effort instead of disabling thinking")

@@ -38,7 +38,9 @@ struct ModelPrice: Codable, Equatable, Sendable {
 }
 
 actor ModelPricing {
-    static let shared = ModelPricing()
+    /// Dictate's catalog cache. Another app passes its own support folder.
+    static let shared = ModelPricing(cacheURL: FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Application Support/Flow/models-dev-prices.json"))
     private let log = Logger(subsystem: "sh.taf.flow", category: "pricing")
     private var catalog: [String: CatalogProvider] = [:]
     private var fetchedAt: Date?
@@ -79,9 +81,8 @@ actor ModelPricing {
         }
     }
 
-    private init() {
-        cacheURL = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/Flow/models-dev-prices.json")
+    init(cacheURL: URL) {
+        self.cacheURL = cacheURL
         if let data = try? Data(contentsOf: cacheURL),
            let saved = try? JSONDecoder().decode([String: CatalogProvider].self, from: data) {
             catalog = saved
