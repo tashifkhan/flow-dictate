@@ -45,6 +45,8 @@ struct CleanupContext: Sendable {
     var substitutions = DictationSubstitutions()
     /// The last thing Flow typed, so "scratch that" has a referent.
     var lastInsert: String?
+    /// JSON containing only the draft around the insertion point when recording began.
+    var existingText: String?
     /// Whether the transcript contains a command phrase. Set by `CleanupService.clean`.
     var spokenCommand = false
 }

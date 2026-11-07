@@ -177,7 +177,7 @@ enum PromptLibrary {
     /// orphaned section.
     static let instructionIDs: Set<String> = {
         var ids: Set<String> = [
-            "cleanup-rules.rules",
+            "cleanup-rules.rules", "cleanup-context.existing_text",
             "cleanup-context.hinglish", "cleanup-context.terms", "cleanup-context.term", "cleanup-context.term.described",
             "cleanup-context.replacements", "cleanup-context.replacement", "cleanup-context.speaker",
             "cleanup-context.speaker.detail", "cleanup-context.speaker.detail.described", "cleanup-context.last_insert",
@@ -205,6 +205,8 @@ enum PromptLibrary {
         context.termDescriptions = ["ccadb": "Mozilla's Common CA Database"]
         context.corrections = [(said: "ta shif", meant: "Tashif")]
         context.speakerDetails = [SpeakerDetail(name: "GitHub", description: "personal profile link", value: "github.com/you")]
+        context.existingText = DictationTextContext.snapshot(text: "I checked the CCADB entry. ",
+                                                          selection: NSRange(location: 26, length: 0))
         return ["# Cloud, transcript\n\n" + CloudService.refinementInstruction(context),
                 "# Cloud, audio\n\n" + CloudService.refinementInstruction(context, audio: true),
                 "# Apple Intelligence\n\n" + CleanupService.instructions(for: context)]

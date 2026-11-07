@@ -10,6 +10,9 @@ enum DictationCleanupPolicy {
     /// dictation, separated by blank lines. Empty when none do.
     static func contextBlocks(for context: CleanupContext, includeLastInsert: Bool) -> String {
         var blocks: [String] = []
+        if let text = context.existingText, !text.isEmpty {
+            blocks.append(PromptLibrary.render("cleanup-context.existing_text", ["text": text]))
+        }
         if context.transcriptionLanguage == .hinglish { blocks.append(PromptLibrary.render("cleanup-context.hinglish")) }
         if includeLastInsert, let last = context.lastInsert, !last.isEmpty, context.spokenCommand {
             blocks.append(PromptLibrary.render("cleanup-context.last_insert", ["text": String(last.suffix(3000))]))

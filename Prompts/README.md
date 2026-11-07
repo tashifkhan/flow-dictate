@@ -5,7 +5,7 @@ Every prompt Flow sends to a model lives in this folder as Markdown. `scripts/bu
 | File | What it is |
 | --- | --- |
 | `cleanup-rules.md` | The cleanup rules and examples every model gets, as numbered steps. |
-| `cleanup-context.md` | Optional blocks: custom words, replacements, details about the speaker, Hindi and English, and the last insertion. Each appears only when it applies. |
+| `cleanup-context.md` | Optional blocks: the existing draft, custom words, replacements, details about the speaker, Hindi and English, and the last insertion. Each appears only when it applies. |
 | `cloud-cleanup.md` | The cloud cleanup prompt: one version for a transcript, one for audio sent directly, and a style line per kind of app. |
 | `cloud-transcription.md` | Transcription only, the first step of a two-pass cloud route. |
 | `apple-intelligence-cleanup.md` | The prompt for Apple Intelligence on this Mac, including spoken commands and its schema field descriptions. The model has a 4,096-token context, so keep it short. |
@@ -33,5 +33,6 @@ Rendering is strict. A missing value, a value the section has no slot for, an un
 | `cleanup-context.speaker` | `details`, one `speaker.detail` line per field |
 | `cleanup-context.speaker.detail`, `.described` | `name`, `description`, `value` |
 | `cleanup-context.last_insert` | `text` |
+| `cleanup-context.existing_text` | `text`, a JSON snapshot of the draft around the cursor |
 
 `cleanup_rules` is the rendered `cleanup-rules.rules`. `context` is the `cleanup-context.md` blocks that apply, separated by blank lines. `style` is the prompt's own `style.chat`, `style.email`, `style.development`, `style.document`, or `style.general`. Every other section has no placeholders.
