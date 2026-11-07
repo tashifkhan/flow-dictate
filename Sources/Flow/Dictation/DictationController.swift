@@ -304,8 +304,18 @@ final class DictationController {
             targetApp = .flowNote
         } else {
             switch target {
-            case .cursor: targetApp = FrontApp.current()
-            case .note: targetApp = .flowNote
+            case .cursor:
+                targetApp = FrontApp.current()
+                targetApp.existingText = targetApp.captureTextContext()
+            case .note(let id):
+                targetApp = .flowNote
+                if let state = noteStreamingField?.read() {
+                    targetApp.existingText = DictationTextContext.snapshot(
+                        text: state.text, selection: NSRange(location: state.location, length: state.length))
+                } else if let note = library.note(id) {
+                    targetApp.existingText = DictationTextContext.snapshot(
+                        text: note.text, selection: NSRange(location: note.text.utf16.count, length: 0))
+                }
             }
         }
 
@@ -721,7 +731,8 @@ final class DictationController {
                 termDescriptions: lexicon.wordDescriptions,
                 speakerDetails: lexicon.promptDetails,
                 substitutions: lexicon.substitutions,
-                lastInsert: self.inserter.lastInsert
+                lastInsert: self.inserter.lastInsert,
+                existingText: app.existingText
         )
     }
 

@@ -93,6 +93,29 @@ struct FrontApp: Sendable {
     /// The focused field sits inside web content, where only a real paste reaches the
     /// page's editor.
     var isWebContent: Bool = false
+    /// The draft at the start of recording, for cleanup to continue without repeating it.
+    var existingText: String?
+
+    @MainActor
+    func captureTextContext() -> String? {
+        guard hasTextTarget, !isSecure, Permissions.hasAccessibility, processID > 0,
+              FrontApp.systemFocus()?.appPID == processID,
+              let element = Self.focusedElement(pid: processID),
+              !Self.isProtectedContent(element),
+              let text = Self.string(element, kAXValueAttribute as String) else { return nil }
+        var selection: NSRange?
+        var value: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, &value) == .success,
+           let value, CFGetTypeID(value) == AXValueGetTypeID() {
+            var range = CFRange()
+            if AXValueGetValue(value as! AXValue, .cfRange, &range),
+               range.location >= 0, range.length >= 0, range.location <= text.utf16.count,
+               range.length <= text.utf16.count - range.location {
+                selection = NSRange(location: range.location, length: range.length)
+            }
+        }
+        return DictationTextContext.snapshot(text: text, selection: selection)
+    }
 
     /// Zed's custom editor needs clipboard paste when AX cannot expose its cursor.
     var prefersClipboardPaste: Bool { isElectron || Self.isZed(bundleID) }

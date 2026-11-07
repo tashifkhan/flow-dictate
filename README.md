@@ -74,6 +74,8 @@ Flow cleans the whole thought after you stop speaking. It removes filler, false 
 
 Cleanup adapts to where the text goes. Chat apps keep a casual tone, email gets complete sentences, and developer tools get technical vocabulary. This also works for known sites in a browser, such as Gmail, Slack, WhatsApp, GitHub, GitLab, Google Docs, and Notion. Flow classifies the site on your Mac, then discards the page title and URL. Neither goes to history or to a model.
 
+When recording starts, Flow reads the existing text in the focused field or Flow note. Cleanup receives up to 3,000 characters around the cursor and treats the new dictation as a continuation. It returns only the new words. This context goes to your configured cloud cleanup models when you use them, and stays on this Mac with local cleanup. Flow does not save the draft context to history. If the app does not expose its text through Accessibility, dictation proceeds without it.
+
 Settings › General › Language has a Hinglish mode. It uses the Hindi speech model, accepts Hindi mixed with English, and writes Hindi in Roman script. English product names and technical terms stay in English. Without Apple Intelligence, a local transliteration still keeps the result in Latin characters.
 
 ## Streaming
